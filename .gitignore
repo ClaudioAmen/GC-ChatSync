@@ -30,3 +30,8 @@ sync_state.local.json
 test_data/
 *.db-wal
 *.db-shm
+
+# Personal review & internal notes
+*-review.md
+*review*.md
+notes/
