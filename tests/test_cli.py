@@ -14,6 +14,13 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(args.command, "run")
         self.assertTrue(args.verbose)
 
+        args_run_nosync = parser.parse_args(["run", "--no-sync"])
+        self.assertEqual(args_run_nosync.command, "run")
+        self.assertTrue(args_run_nosync.no_sync)
+
+        args_launch = parser.parse_args(["launch"])
+        self.assertEqual(args_launch.command, "launch")
+
         args_pull = parser.parse_args(["pull", "--force"])
         self.assertEqual(args_pull.command, "pull")
         self.assertTrue(args_pull.force)

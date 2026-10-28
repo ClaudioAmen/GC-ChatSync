@@ -124,7 +124,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     """Execute full wrapper lifecycle: Pull -> Launch -> Push."""
     cfg = load_config()
     runner = SyncRunner(cfg)
+    if getattr(args, "no_sync", False):
+        return runner.launch_app(extra_args=args.app_args)
     return runner.run(extra_args=args.app_args)
+
+
+def cmd_launch(args: argparse.Namespace) -> int:
+    """Directly launch Antigravity without synchronization."""
+    cfg = load_config()
+    runner = SyncRunner(cfg)
+    return runner.launch_app(extra_args=args.app_args)
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -213,7 +222,20 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common_parser],
         help="Orchestrate sync lifecycle: pull deltas, launch Antigravity, push updates on exit.",
     )
+    p_run.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="Bypass cloud sync and launch Antigravity directly.",
+    )
     p_run.add_argument("app_args", nargs="*", help="Arguments forwarded directly to Antigravity.")
+
+    # Command: launch
+    p_launch = subparsers.add_parser(
+        "launch",
+        parents=[common_parser],
+        help="Directly launch Antigravity without synchronization.",
+    )
+    p_launch.add_argument("app_args", nargs="*", help="Arguments forwarded directly to Antigravity.")
 
     # Command: pull
     p_pull = subparsers.add_parser(
@@ -310,6 +332,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     commands = {
         "run": cmd_run,
+        "launch": cmd_launch,
         "pull": cmd_pull,
         "push": cmd_push,
         "status": cmd_status,

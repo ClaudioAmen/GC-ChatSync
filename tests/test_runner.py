@@ -19,6 +19,9 @@ class TestSyncRunner(unittest.TestCase):
         self.data_dir = self.tmp_path / "antigravity"
         self.data_dir.mkdir()
 
+        self.patch_lock = patch("gc_chatsync.runner.ProcessLock")
+        self.mock_lock = self.patch_lock.start()
+
         self.cfg = AppConfig(
             device_id="test-laptop",
             rclone_remote="testremote",
@@ -28,6 +31,7 @@ class TestSyncRunner(unittest.TestCase):
         )
 
     def tearDown(self):
+        self.patch_lock.stop()
         self.temp_dir.cleanup()
 
     @patch("gc_chatsync.drive.DriveClient.test_connection")

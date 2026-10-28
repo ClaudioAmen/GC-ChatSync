@@ -28,6 +28,7 @@ EXCLUDE_PATTERNS = [
     "presence/**",
     "log/**",
     ".backups/**",
+    "**/.system_generated/tasks/**",
 ]
 
 
@@ -123,13 +124,17 @@ class DriveClient:
             raise RcloneError(f"rclone command timed out after {timeout} seconds: {e}") from e
 
     def test_connection(self) -> bool:
-        """Check if remote is accessible and authorized (fast directory ping)."""
+        """Check if remote is accessible and authorized (fast directory/quota ping)."""
         try:
-            self.run_cmd(["lsf", f"{self.remote_name}:", "--max-depth", "1"], timeout=15, log_errors=False)
+            self.run_cmd(["about", f"{self.remote_name}:"], timeout=20, log_errors=False)
             return True
-        except Exception as e:
-            logger.warning(f"Google Drive connection test failed: {e}")
-            return False
+        except Exception:
+            try:
+                self.run_cmd(["lsd", f"{self.remote_name}:"], timeout=25, log_errors=False)
+                return True
+            except Exception as e:
+                logger.warning(f"Google Drive connection test failed: {e}")
+                return False
 
     def get_manifest(self) -> Optional[SyncManifest]:
         """Fetch cloud manifest if it exists."""
@@ -175,51 +180,69 @@ class DriveClient:
         """Download new/updated conversation session databases from remote."""
         local_conversations_dir.mkdir(parents=True, exist_ok=True)
         remote_dir = f"{self.remote_base}/conversations"
-        args = ["copy", remote_dir, str(local_conversations_dir), "--update"]
+        args = ["copy", remote_dir, str(local_conversations_dir), "--update", "--transfers", "8", "--fast-list"]
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
-        self.run_cmd(args, timeout=120)
+        try:
+            self.run_cmd(args, timeout=180)
+        except RcloneError as e:
+            if "directory not found" in str(e).lower():
+                logger.debug(f"Remote conversations folder not found on Drive (clean remote): {e}")
+            else:
+                raise
 
     def push_conversations(self, local_conversations_dir: Path) -> None:
         """Upload new/updated conversation session databases to remote."""
         if not local_conversations_dir.is_dir():
             return
         remote_dir = f"{self.remote_base}/conversations"
-        args = ["copy", str(local_conversations_dir), remote_dir, "--update"]
+        args = ["copy", str(local_conversations_dir), remote_dir, "--update", "--transfers", "8", "--fast-list", "--local-no-check-updated"]
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
-        self.run_cmd(args, timeout=120)
+        self.run_cmd(args, timeout=180)
 
     def pull_brain(self, local_brain_dir: Path) -> None:
         """Download new/updated brain artifacts and transcripts from remote."""
         local_brain_dir.mkdir(parents=True, exist_ok=True)
         remote_dir = f"{self.remote_base}/brain"
-        args = ["copy", remote_dir, str(local_brain_dir), "--update"]
+        args = ["copy", remote_dir, str(local_brain_dir), "--update", "--transfers", "8", "--fast-list"]
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
-        self.run_cmd(args, timeout=120)
+        try:
+            self.run_cmd(args, timeout=300)
+        except RcloneError as e:
+            if "directory not found" in str(e).lower():
+                logger.debug(f"Remote brain folder not found on Drive (clean remote): {e}")
+            else:
+                raise
 
     def push_brain(self, local_brain_dir: Path) -> None:
         """Upload new/updated brain artifacts and transcripts to remote."""
         if not local_brain_dir.is_dir():
             return
         remote_dir = f"{self.remote_base}/brain"
-        args = ["copy", str(local_brain_dir), remote_dir, "--update"]
+        args = ["copy", str(local_brain_dir), remote_dir, "--update", "--transfers", "8", "--fast-list", "--local-no-check-updated"]
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
-        self.run_cmd(args, timeout=120)
+        self.run_cmd(args, timeout=300)
 
     def pull_projects(self, local_projects_staging: Path) -> None:
         """Download remote project definitions into a staging directory for translation."""
         local_projects_staging.mkdir(parents=True, exist_ok=True)
         remote_dir = f"{self.remote_base}/projects"
-        args = ["copy", remote_dir, str(local_projects_staging), "--update"]
-        self.run_cmd(args, timeout=60)
+        args = ["copy", remote_dir, str(local_projects_staging), "--update", "--transfers", "8", "--fast-list"]
+        try:
+            self.run_cmd(args, timeout=120)
+        except RcloneError as e:
+            if "directory not found" in str(e).lower():
+                logger.debug(f"Remote projects folder not found on Drive (clean remote): {e}")
+            else:
+                raise
 
     def push_projects(self, local_projects_dir: Path) -> None:
         """Upload local project definitions to Google Drive."""
         if not local_projects_dir.is_dir():
             return
         remote_dir = f"{self.remote_base}/projects"
-        args = ["copy", str(local_projects_dir), remote_dir, "--update"]
-        self.run_cmd(args, timeout=60)
+        args = ["copy", str(local_projects_dir), remote_dir, "--update", "--transfers", "8", "--fast-list", "--local-no-check-updated"]
+        self.run_cmd(args, timeout=120)

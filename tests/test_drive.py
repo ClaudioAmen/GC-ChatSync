@@ -2,7 +2,9 @@
 
 import json
 import shutil
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from gc_chatsync.drive import DriveClient, RcloneError, SyncManifest
@@ -95,6 +97,22 @@ class TestDriveClient(unittest.TestCase):
 
         client = DriveClient(remote_name="gdrive")
         self.assertTrue(client.test_connection())
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_pull_handles_directory_not_found(self, mock_run, mock_which):
+        mock_which.return_value = "/usr/bin/rclone"
+        mock_res = MagicMock()
+        mock_res.returncode = 1
+        mock_res.stderr = "error reading source root directory: directory not found"
+        mock_run.return_value = mock_res
+
+        client = DriveClient(remote_name="gdrive")
+        with tempfile.TemporaryDirectory() as tmp:
+            # Should not raise exception
+            client.pull_projects(Path(tmp))
+            client.pull_conversations(Path(tmp))
+            client.pull_brain(Path(tmp))
 
 
 if __name__ == "__main__":

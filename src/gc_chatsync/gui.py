@@ -190,6 +190,11 @@ class ChatSyncGUI:
                                   cursor="hand2")
         self.btn_run.pack(fill="x")
 
+        self.btn_bypass = ttk.Button(actions, text="⚡  Bypassa Sync e Avvia normalmente",
+                                     style="Secondary.TButton", command=self.on_bypass_clicked,
+                                     cursor="hand2")
+        self.btn_bypass.pack(fill="x", pady=(6, 0))
+
         secondary = ttk.Frame(actions)
         secondary.pack(fill="x", pady=(8, 0))
         secondary.columnconfigure((0, 1, 2), weight=1, uniform="btn")
@@ -242,7 +247,7 @@ class ChatSyncGUI:
 
     def _set_buttons_state(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
-        for btn in (self.btn_run, self.btn_pull, self.btn_push, self.btn_refresh):
+        for btn in (self.btn_run, self.btn_bypass, self.btn_pull, self.btn_push, self.btn_refresh):
             btn.configure(state=state)
 
     def refresh_status_async(self) -> None:
@@ -310,6 +315,16 @@ class ChatSyncGUI:
         self.is_running = True
         self._run_in_background("Sincronizzazione e avvio in corso...", self.runner.run,
                                 None, "Errore GC-ChatSync")
+
+    def on_bypass_clicked(self) -> None:
+        """Launch Antigravity directly without running cloud pull or push."""
+        if self.is_running:
+            return
+        self.is_running = True
+        self._run_in_background("Avvio diretto di Antigravity...",
+                                lambda: self.runner.launch_app(),
+                                "Sessione diretta conclusa (nessuna sincronizzazione cloud eseguita).",
+                                "Errore Avvio")
 
     def on_pull_clicked(self) -> None:
         """Execute a manual pull with the force flag."""
