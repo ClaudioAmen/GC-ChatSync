@@ -1,10 +1,11 @@
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=Antigravity (GC-ChatSync)
+Name=GC-ChatSync (Antigravity)
 Comment=Google Antigravity with automated Google Drive chat synchronization
-Exec=/home/claudio/Documents/progetti/gc-chatsync/scripts/launch-linux.sh
-Icon=utilities-terminal
+Exec=gc-chatsync %U
+Icon=antigravity
 Terminal=false
 Categories=Development;IDE;
+StartupWMClass=Antigravity
 StartupNotify=true

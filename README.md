@@ -11,58 +11,70 @@
 
 ---
 
+> [!TIP]
+> 🤖 **Zero-Effort AI Setup:**
+> If you are using an AI coding assistant (**Google Antigravity**, **Cursor**, **Claude Code**, **GitHub Copilot**, or **ChatGPT**), you don't even need to configure things manually!
+> Simply copy and paste the ready-to-run prompt from [**`AI_PROMPT.md`**](AI_PROMPT.md) directly into your assistant's chat. It will inspect your operating system, check your tools, guide the Google Drive authorization, and configure GC-ChatSync automatically for you.
+
+---
+
 ## 👨‍💻 About The Project
 
 > [!NOTE]
-> 🚀 **Author Note:** This is my very first open-source project as an independent developer, designed and developed in continuous pair-programming collaboration with **Google Antigravity AI**. 
-> Built out of a real everyday need to keep my desktop workstation (Windows) and laptop (Linux) fully synchronized, this project is shared with the community as a modular, lightweight solution. Feedback, issues, and contributions are super welcome!
+> 🚀 **Author Note:** This is an open-source project created by an independent developer in continuous pair-programming collaboration with **Google Antigravity AI**.
+> Built out of an everyday need to keep a desktop workstation (Windows) and a laptop (Linux) fully synchronized, this project is shared with the community as a modular, lightweight, and robust solution. Feedback, issues, and contributions are super welcome!
 
 ---
 
 ## 💡 The Problem
 
-Google Antigravity is a groundbreaking AI-first development environment, but currently lacks native, multi-device cloud synchronization for ongoing conversations and session state across different machines.
+Google Antigravity is an AI-first development environment, but currently lacks native, multi-device cloud synchronization for ongoing conversations and session state across different machines.
 
 Simply pointing general-purpose cloud storage clients (such as Google Drive for Desktop, OneDrive, or Dropbox) directly at the internal `~/.gemini/antigravity/` folder leads to serious issues:
 1. **SQLite WAL Locking & Corruption:** Antigravity runs SQLite databases in Write-Ahead Log (`WAL`) mode. Syncing raw database files while the application is active causes lock contention, desynchronized `-wal` files, and database corruption.
 2. **Conversation Overwrites:** The global conversation index (`conversation_summaries.db`) lists all sessions in the sidebar. A blind file overwrite from one PC silently wipes out sessions created on the other.
-3. **No Linux Desktop Client:** Google Drive does not provide an official desktop synchronization client for Linux.
+3. **Cross-Platform Path Incompatibility:** Project workspaces referenced in conversations use platform-dependent URIs (`file:///home/claudio/...` vs `file:///C:/Users/...`). Blind syncing breaks workspace links in the Antigravity sidebar.
+4. **No Linux Desktop Client:** Google Drive does not provide an official desktop synchronization client for Linux.
 
 ---
 
 ## ⚡ The Solution
 
-`GC-ChatSync` (`gc-chatsync`) is an intelligent, lightweight synchronization wrapper built with **Python** and **`rclone`**:
+`GC-ChatSync` (`gc-chatsync`) is an intelligent, lightweight synchronization wrapper and graphical dashboard built with **Python 3.10+ standard library** and **`rclone`**:
 
-- 🔒 **Safe Lifecycle Execution:** Synchronizes *before* Antigravity opens (PULL) and *after* it gracefully exits (PUSH), guaranteeing that database files are never touched while locked.
-- 🔀 **Intelligent SQL Index Merging:** Performs two-way incremental merges on `conversation_summaries.db` (`INSERT OR REPLACE INTO conversation_summaries ...`), combining chat histories without dropping sessions from either device.
-- ☁️ **Cloud Token State (`sync_state.json`):** Maintains a tiny manifest on Google Drive tracking the last machine that synced (`"last_pc"`).
-  - If the cloud was modified by the *other* PC $\rightarrow$ automatically **pulls** and merges changes before launch.
-  - If you are on the *same* machine $\rightarrow$ launches Antigravity instantly with zero redundant downloads.
-  - Upon closing Antigravity $\rightarrow$ automatically **pushes** new/updated sessions to Drive and updates the token.
-- 🚀 **Zero Overhead & Zero Costs:** No heavy background daemons, no memory footprint during development, and 100% free Google Drive API usage via standard OAuth.
+- 🖥️ **Modern Graphical Dashboard (`GUI`):** Built-in dark/light GUI that automatically follows your operating system theme, providing one-click launch, real-time sync status, and integrated logging.
+- 🔒 **Safe Lifecycle Execution:** Synchronizes *before* Antigravity opens (PULL) and *after* it exits (PUSH), guaranteeing that database files are never touched while locked.
+- 🔀 **Intelligent SQL Index Merging:** Performs two-way incremental merges on `conversation_summaries.db` using `ATTACH DATABASE` and dynamic column discovery. Inserts missing conversations and only updates existing records when `remote.last_modified_time > local.last_modified_time`.
+- 🛡️ **Non-Destructive File Sync:** Uses `rclone copy --update` instead of destructive `sync` commands, ensuring files are never deleted remotely by a local deletion or vice versa.
+- 💾 **Online SQLite Backups:** Utilizes SQLite's native online backup API (`conn.backup()`) and `PRAGMA wal_checkpoint(TRUNCATE)` to generate clean, crash-safe snapshots in `.backups/` (retaining the 5 most recent snapshots).
+- 🔢 **Monotonic Cloud Epochs (`manifest.json`):** Tracks cloud state with strictly increasing epoch numbers and per-device tokens, eliminating false updates caused by clock skew between machines.
+- 🚨 **Crash & Dirty Session Recovery:** Tracks session state via `.session_dirty`. If your machine suddenly powers off or reboots during a session, the next launch warns you and safely flushes unsaved local changes to the cloud.
+- 🔄 **Cross-Platform Workspace Translation:** Automatically translates workspace URIs in projects (`projects/*.json`) and conversation summaries between Windows (`C:/Users/...`) and Linux (`/home/...`), with support for custom root path mappings.
+- 🔗 **Desktop Shortcut Integration:** Seamlessly patches your habitual Antigravity dock and desktop icon with automated backup (`.bak`), or creates a standalone shortcut if preferred.
 
 ---
 
 ## 🏗️ Architecture & Workflow
 
 ```
-[User Launches GC-ChatSync]
-            │
-            ▼
+[User Clicks Antigravity Icon / gc-chatsync]
+                    │
+                    ▼
 ┌────────────────────────────────────────────────────────┐
 │               GC-ChatSync PRE-CHECK                    │
-│      Checks Google Drive: sync_state.json              │
+│   Checks Google Drive manifest.json (epoch & device)   │
 └───────────────────────────┬────────────────────────────┘
                             │
               ┌─────────────┴─────────────┐
               ▼                           ▼
-     [Other PC modified Drive]   [Current PC is up-to-date]
+     [Cloud has new updates]     [Current PC is up-to-date]
               │                           │
               ▼                           │
 ┌──────────────────────────────┐          │
-│ 1. PULL deltas via rclone    │          │
-│ 2. Merge SQLite indexes      │          │
+│ 1. PULL deltas (copy --update)│          │
+│ 2. Backup local SQLite       │          │
+│ 3. Two-way SQL Index Merge   │          │
+│ 4. Translate Workspace URIs  │          │
 └─────────────┬────────────────┘          │
               │                           │
               └─────────────┬─────────────┘
@@ -77,9 +89,11 @@ Simply pointing general-purpose cloud storage clients (such as Google Drive for 
                             ▼
 ┌────────────────────────────────────────────────────────┐
 │               GC-ChatSync POST-SYNC                    │
-│  1. Checkpoint local SQLite databases                  │
-│  2. PUSH new/updated sessions to Google Drive          │
-│  3. Set last_pc = current_pc in cloud manifest         │
+│  1. Checkpoint SQLite WAL (TRUNCATE)                   │
+│  2. Create atomic snapshot backup                      │
+│  3. PUSH new/updated sessions to Google Drive          │
+│  4. Increment cloud epoch in manifest.json             │
+│  5. Clear dirty session flag                           │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -89,9 +103,9 @@ Simply pointing general-purpose cloud storage clients (such as Google Drive for 
 
 | Platform | Antigravity Flavor | Status |
 | :--- | :--- | :--- |
-| **Linux (Ubuntu, Debian, Fedora, Arch)** | Antigravity 2.0 Standalone / CLI | ✅ Supported (v0.1.0) |
-| **Windows 10 / 11** | Antigravity 2.0 Standalone / CLI | ✅ Supported (v0.1.0) |
-| **macOS** | Antigravity 2.0 / CLI | 📋 Planned |
+| **Linux (Ubuntu, Debian, Fedora, Arch)** | Antigravity Standalone / AppImage / CLI | ✅ Supported (v0.1.0) |
+| **Windows 10 / 11** | Antigravity Standalone / CLI | ✅ Supported (v0.1.0) |
+| **macOS** | Antigravity Standalone / CLI | 📋 Planned |
 
 ---
 
@@ -100,51 +114,68 @@ Simply pointing general-purpose cloud storage clients (such as Google Drive for 
 ```
 Google Drive/
 └── GC-ChatSync/
-    ├── manifest.json              --> Cloud state token tracking latest active device
+    ├── manifest.json              --> Cloud state token tracking epoch revision and author
     ├── conversation_summaries.db  --> Unified conversation index merged via SQL
     ├── conversations/             --> Individual chat session databases (<uuid>.db)
     ├── brain/                     --> Session logs, scratchpads, generated artifacts
     └── projects/                  --> Cross-platform translated project definitions
 ```
 
-*Automatically excluded:* `crashes/`, `presence/`, `cache/`, `installation_id`, `*.db-wal`, `*.db-shm`.
+*Excluded automatically:* `crashes/`, `presence/`, `cache/`, `installation_id`, `*.db-wal`, `*.db-shm`.
 
 ---
 
 ## 🚀 Getting Started
 
 ### 1. Prerequisites (Connect your Google Drive)
-Each user connects their own personal Google Drive via [`rclone`](https://rclone.org/):
+Each user connects their personal Google Drive via [`rclone`](https://rclone.org/):
 
 ```bash
 # On Linux (Ubuntu/Debian):
 sudo apt install rclone
-rclone config   # Interactive guide: choose 'drive' and log in with your Google account
+rclone config   # Choose 'drive' and log in with your Google account
 
 # On Windows (PowerShell):
 winget install Rclone.Rclone
 rclone config
 ```
 
+> [!TIP]
+> **Want Zero-Knowledge Encryption?**
+> You can easily wrap your `gdrive:` remote with an [`rclone crypt`](https://rclone.org/crypt/) remote (e.g. `gdrive-crypt:`). In GC-ChatSync setup, simply specify `gdrive-crypt` as your remote name. All chat files will be encrypted locally with AES-256 before being uploaded to Google Drive!
+
 ### 2. Installation
 ```bash
 git clone https://github.com/ClaudioAmen/GC-ChatSync.git
 cd GC-ChatSync
+
+# Linux:
+pip install --user --break-system-packages -e .
+
+# Windows:
 pip install -e .
 ```
 
 ### 3. Usage & Commands
 
 ```bash
-# Check status and alignment with Google Drive
+# Launch Graphical Dashboard (Auto Dark/Light Theme)
+gc-chatsync gui    # or just: gc-chatsync
+
+# Check system status, Google Drive ping, and cloud alignment
 gc-chatsync status
 
-# Run the complete wrapper (PULL -> Run Antigravity -> PUSH on close)
+# Run full wrapper in CLI mode (PULL -> Run Antigravity -> PUSH on close)
 gc-chatsync run
 
 # Manual one-off pull or push
 gc-chatsync pull
 gc-chatsync push
+
+# Connect GC-ChatSync directly to your habitual Antigravity desktop icon
+gc-chatsync install-shortcut             # Updates main icon (with .bak backup)
+gc-chatsync install-shortcut --standalone # Creates separate icon
+gc-chatsync restore-shortcut            # Reverts original icon from backup
 
 # Interactive setup wizard
 gc-chatsync setup
@@ -152,20 +183,35 @@ gc-chatsync setup
 
 ---
 
+## 🔒 Security & Privacy Best Practices
+
+1. **Protect your OAuth Token:** Rclone stores its credentials in `~/.config/rclone/rclone.conf`. On Linux, ensure strict file permissions:
+   ```bash
+   chmod 600 ~/.config/rclone/rclone.conf
+   ```
+2. **Scoped Drive Permissions:** When running `rclone config`, you can choose Scope `2` (`drive.file`). This limits rclone's access strictly to files and folders created by GC-ChatSync, keeping the rest of your Google Drive inaccessible.
+
+---
+
+## ⚠️ Known Limitations & Troubleshooting
+
+- **First Run on Second PC:** When launching GC-ChatSync on your second PC for the first time, use `gc-chatsync pull -f` (or click **"Riprova / Pull"** in the GUI) to pull the initial history from Drive.
+- **Log Files:** Persistent session logs are written to `~/.config/gc-chatsync/logs/sync.log` (`%APPDATA%\gc-chatsync\logs\sync.log` on Windows) with automatic 5MB rotation.
+- **Active Lock:** If you see `Another GC-ChatSync instance is already running`, an active process is currently holding the sync lock. If a process was terminated abruptly, stale locks are automatically recovered on the subsequent run.
+
+---
+
 ## 🗺️ Roadmap
 
-- [x] Initial architecture & safe SQLite merge strategy
-- [x] Repository initialization & open-source documentation
-- [x] Core Python package (`gc_chatsync`):
-  - [x] Cross-platform environment detection (`Linux` vs `Windows`)
-  - [x] SQLite two-way index merge engine (`ATTACH DATABASE`)
-  - [x] Cloud state lock & manifest validation (`manifest.json`)
-  - [x] Integrated rclone runner
-  - [x] Cross-platform workspace path translation (`C:\...` $\leftrightarrow$ `/home/...`)
-- [x] Desktop launch helpers:
-  - [x] Linux launch script & `.desktop` launcher
-  - [x] Windows `.bat` launcher
-- [ ] Optional end-to-end encryption (`AES-256`) before cloud upload
+- [x] SQLite two-way index merge engine (`ATTACH DATABASE` + `PRAGMA table_info`)
+- [x] Atomic SQLite snapshotting via `conn.backup()` and WAL checkpointing
+- [x] Process locking (`ProcessLock`) and unclean exit recovery (`.session_dirty`)
+- [x] Monotonic cloud revision epochs (`manifest.json`)
+- [x] Cross-platform workspace path translation (`C:\...` $\leftrightarrow$ `/home/...`)
+- [x] Modern Tkinter GUI with automatic Dark/Light system theme detection
+- [x] Desktop shortcut integration and one-click rollback (`.bak`)
+- [x] Zero-effort AI onboarding prompt (`AI_PROMPT.md`)
+- [ ] Direct support for macOS paths
 
 ---
 

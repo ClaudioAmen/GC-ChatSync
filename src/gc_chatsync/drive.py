@@ -48,9 +48,10 @@ class DriveConnectionError(RcloneError):
 
 @dataclass
 class SyncManifest:
-    """Cloud state token tracking the latest synchronizing device."""
+    """Cloud state token tracking the latest synchronizing device and revision epoch."""
     last_device: str
     last_sync_utc: str
+    epoch: int = 1
     version: int = 1
 
     def to_dict(self) -> Dict[str, Any]:
@@ -61,13 +62,14 @@ class SyncManifest:
         return cls(
             last_device=str(data.get("last_device", "unknown")),
             last_sync_utc=str(data.get("last_sync_utc", "")),
+            epoch=int(data.get("epoch", 1)),
             version=int(data.get("version", 1)),
         )
 
     @classmethod
-    def create_now(cls, device_id: str) -> SyncManifest:
+    def create_now(cls, device_id: str, epoch: int = 1) -> SyncManifest:
         now_utc = datetime.now(timezone.utc).isoformat()
-        return cls(last_device=device_id, last_sync_utc=now_utc)
+        return cls(last_device=device_id, last_sync_utc=now_utc, epoch=epoch)
 
 
 class DriveClient:
@@ -148,7 +150,7 @@ class DriveClient:
         remote_path = f"{self.remote_base}/manifest.json"
         json_data = json.dumps(manifest.to_dict(), indent=2)
         self.run_cmd(["rcat", remote_path], input_data=json_data, timeout=30)
-        logger.info(f"Updated remote manifest (last_device={manifest.last_device})")
+        logger.info(f"Updated remote manifest (last_device={manifest.last_device}, epoch={manifest.epoch})")
 
     def pull_summaries(self, local_staging_path: Path) -> bool:
         """Download remote conversation_summaries.db to local staging file."""

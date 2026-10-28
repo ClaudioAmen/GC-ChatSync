@@ -32,23 +32,32 @@ class DatabaseMergeError(Exception):
     pass
 
 
-def checkpoint_db(db_path: Path) -> None:
-    """Flush WAL journal files into the main SQLite database."""
+def checkpoint_db(db_path: Path) -> bool:
+    """Flush WAL journal files into the main SQLite database with TRUNCATE.
+    
+    Returns True if checkpoint succeeded fully, False if busy or errored.
+    """
     if not db_path.is_file():
-        return
+        return False
     try:
         conn = sqlite3.connect(db_path)
         try:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            res = conn.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchone()
+            if res and res[0] != 0:
+                logger.warning(f"WAL checkpoint for {db_path.name} was busy (status={res})")
+                return False
+            return True
         finally:
             conn.close()
     except sqlite3.Error as e:
         logger.warning(f"Could not checkpoint WAL for {db_path}: {e}")
+        return False
 
 
 def create_backup(db_path: Path, max_backups: int = 5) -> Optional[Path]:
-    """Create a timestamped backup of the database and prune old backups.
+    """Create a crash-safe timestamped backup of the database and prune old backups.
 
+    Uses SQLite online backup API to ensure a consistent, lock-free snapshot.
     Keeps the last `max_backups` copies in a `.backups` directory next to the database.
     """
     if not db_path.is_file():
@@ -63,8 +72,19 @@ def create_backup(db_path: Path, max_backups: int = 5) -> Optional[Path]:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     backup_file = backup_dir / f"{db_path.name}.bak_{timestamp}"
 
-    shutil.copy2(db_path, backup_file)
-    logger.info(f"Database backup created: {backup_file}")
+    # Use SQLite online backup API for crash-safe, lock-safe snapshotting
+    try:
+        source_conn = sqlite3.connect(db_path)
+        dest_conn = sqlite3.connect(backup_file)
+        try:
+            source_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+            source_conn.close()
+        logger.info(f"Database backup created: {backup_file}")
+    except Exception as e:
+        logger.warning(f"SQLite online backup failed for {db_path}, falling back to copy: {e}")
+        shutil.copy2(db_path, backup_file)
 
     # Prune old backups
     existing_backups = sorted(

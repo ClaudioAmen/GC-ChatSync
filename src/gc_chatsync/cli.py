@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
@@ -15,17 +17,57 @@ from gc_chatsync.config import (
     get_config_file_path,
     get_default_antigravity_data_dir,
     get_default_device_id,
+    get_log_file_path,
     load_config,
     save_config,
 )
+from gc_chatsync.gui import launch_gui
 from gc_chatsync.runner import SyncRunner
 
+logger = logging.getLogger("gc_chatsync.cli")
 
 def setup_logging(verbose: bool = False) -> None:
-    """Configure root logger level and format."""
+    """Configure console logging and rotating file logging."""
     level = logging.DEBUG if verbose else logging.INFO
-    format_str = "%(asctime)s [%(levelname)s] %(name)s: %(message)s" if verbose else "[%(levelname)s] %(message)s"
-    logging.basicConfig(level=level, format=format_str, datefmt="%H:%M:%S")
+    format_str = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)  # capture all to file, filter for console
+
+    # Close and clear existing handlers
+    for h in list(root_logger.handlers):
+        try:
+            h.close()
+        except Exception:
+            pass
+        root_logger.removeHandler(h)
+
+    # 1. Console handler
+    c_handler = logging.StreamHandler(sys.stdout)
+    c_handler.setLevel(level)
+    c_format = format_str if verbose else "[%(levelname)s] %(message)s"
+    c_handler.setFormatter(logging.Formatter(c_format, datefmt="%H:%M:%S"))
+    root_logger.addHandler(c_handler)
+
+    # 2. File handler (persistent across sessions, 5MB limit with 3 backups)
+    log_file = get_log_file_path()
+    try:
+        f_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        f_handler.setLevel(logging.DEBUG)
+        f_handler.setFormatter(logging.Formatter(format_str, datefmt=datefmt))
+        root_logger.addHandler(f_handler)
+    except Exception as e:
+        c_handler.handle(
+            logging.LogRecord(
+                "gc_chatsync", logging.WARNING, "", 0, f"Could not initialize log file: {e}", (), None
+            )
+        )
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -43,6 +85,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"Projects Directory:{status.projects_dir}")
     print(f"Antigravity Path:  {status.bin_path or '(not configured)'}")
     print(f"Rclone Remote:     {status.remote_name}")
+    print(f"Log File:          {get_log_file_path()}")
 
     conn_icon = "✅ Connected" if status.drive_connected else "❌ Disconnected (check rclone config)"
     print(f"Google Drive:      {conn_icon}")
@@ -51,6 +94,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         print("-" * 55)
         print(f"Cloud Last Device: {status.cloud_last_device or '(no sync yet)'}")
         print(f"Cloud Last Sync:   {status.cloud_last_sync_utc or 'N/A'}")
+        if status.cloud_epoch:
+            print(f"Cloud Revision:    Epoch {status.cloud_epoch}")
+        if status.session_dirty:
+            print("Pending Changes:   ⚠️ Previous session exited without pushing! Run: gc-chatsync push")
         sync_icon = "🟢 Up to date" if status.in_sync else "🟡 Updates available in cloud"
         print(f"Sync Alignment:    {sync_icon}")
     print("=" * 55 + "\n")
@@ -120,6 +167,21 @@ def cmd_setup(args: argparse.Namespace) -> int:
     else:
         print("⚠️ Warning: Google Drive connection failed. Please ensure 'rclone config' is configured.\n")
 
+    # Desktop shortcut integration
+    integrate_input = input("Vuoi collegare GC-ChatSync alla tua icona abituale di Antigravity? [S/n]: ").strip().lower()
+    if integrate_input not in ("n", "no"):
+        from gc_chatsync.desktop import integrate_desktop_shortcut
+        if integrate_desktop_shortcut(backup=True):
+            print("✅ Icona abituale di Antigravity collegata con successo (backup salvato)!\n")
+        else:
+            print("⚠️ Impossibile aggiornare l'icona automaticamente (puoi riprovare con: gc-chatsync install-shortcut).\n")
+    else:
+        from gc_chatsync.desktop import create_standalone_shortcut
+        if create_standalone_shortcut():
+            print("✅ Icona separata 'GC-ChatSync (Antigravity)' creata con successo!\n")
+        else:
+            print("⚠️ Impossibile creare l'icona separata.\n")
+
     return 0
 
 
@@ -182,19 +244,69 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run interactive setup wizard.",
     )
 
+    # Command: gui
+    subparsers.add_parser(
+        "gui",
+        parents=[common_parser],
+        help="Launch the graphical user interface.",
+    )
+
+    # Command: install-shortcut
+    p_shortcut = subparsers.add_parser(
+        "install-shortcut",
+        parents=[common_parser],
+        help="Connect GC-ChatSync directly to the standard Antigravity application icon.",
+    )
+    p_shortcut.add_argument(
+        "-s", "--standalone",
+        action="store_true",
+        help="Create a separate GC-ChatSync application shortcut instead of replacing the default icon.",
+    )
+
+    # Command: restore-shortcut
+    subparsers.add_parser(
+        "restore-shortcut",
+        parents=[common_parser],
+        help="Restore original Antigravity application icon from backup.",
+    )
+
     return parser
+
+
+def _cmd_install_shortcut(args: argparse.Namespace) -> int:
+    """Handle shortcut installation."""
+    from gc_chatsync.desktop import create_standalone_shortcut, integrate_desktop_shortcut
+    if getattr(args, "standalone", False):
+        success = create_standalone_shortcut()
+        if success:
+            print("✅ Icona separata 'GC-ChatSync (Antigravity)' creata con successo.")
+        return 0 if success else 1
+    else:
+        success = integrate_desktop_shortcut(backup=True)
+        if success:
+            print("✅ Icona abituale di Antigravity collegata a GC-ChatSync (backup salvato).")
+        return 0 if success else 1
+
+
+def _cmd_restore_shortcut(args: argparse.Namespace) -> int:
+    """Handle shortcut restore."""
+    from gc_chatsync.desktop import restore_desktop_shortcut
+    success = restore_desktop_shortcut()
+    if success:
+        print("✅ Icona originale di Antigravity ripristinata dal backup.")
+    return 0 if success else 1
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     """Entry point for the gc-chatsync command line interface."""
+    raw_args = sys.argv[1:] if argv is None else argv
+    # Filter out freedesktop field codes (%U, %F, etc.) and empty args if passed by desktop launchers
+    cleaned_args = [a for a in raw_args if a not in ("%U", "%u", "%F", "%f", "")]
+
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(cleaned_args)
 
     setup_logging(verbose=args.verbose)
-
-    if not args.command:
-        parser.print_help()
-        return 0
 
     commands = {
         "run": cmd_run,
@@ -202,7 +314,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         "push": cmd_push,
         "status": cmd_status,
         "setup": cmd_setup,
+        "gui": lambda args: launch_gui(),
+        "install-shortcut": _cmd_install_shortcut,
+        "restore-shortcut": _cmd_restore_shortcut,
     }
+
+    if not args.command:
+        # If launched without subcommands and graphical display is present, open GUI
+        has_display = bool(
+            sys.platform == "win32"
+            or os.environ.get("DISPLAY")
+            or os.environ.get("WAYLAND_DISPLAY")
+        )
+        if has_display:
+            return launch_gui()
+
+        parser.print_help()
+        return 0
 
     handler = commands.get(args.command)
     if handler:

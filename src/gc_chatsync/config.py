@@ -68,6 +68,18 @@ def get_config_file_path() -> Path:
     return get_config_dir() / "config.json"
 
 
+def get_logs_dir() -> Path:
+    """Return the logs directory based on OS standard paths."""
+    log_dir = get_config_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+
+def get_log_file_path() -> Path:
+    """Return the path to sync.log."""
+    return get_logs_dir() / "sync.log"
+
+
 def get_default_antigravity_data_dir() -> Path:
     """Return default Antigravity app data directory (~/.gemini/antigravity)."""
     sys_name = get_system_name()

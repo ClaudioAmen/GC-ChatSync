@@ -141,21 +141,28 @@ class TestDatabaseMerger(unittest.TestCase):
         self._create_sample_db(self.remote_db)
 
         # Add a new hypothetical column to remote
-        with sqlite3.connect(self.remote_db) as conn:
+        conn = sqlite3.connect(self.remote_db)
+        try:
             conn.execute("ALTER TABLE conversation_summaries ADD COLUMN new_feature_flag TEXT DEFAULT 'enabled';")
             conn.execute("""
                 INSERT INTO conversation_summaries (conversation_id, title, step_count, last_modified_time, new_feature_flag)
                 VALUES ('id-C', 'Chat from updated Antigravity', 3, '2026-10-28 16:00:00', 'enabled');
             """)
+            conn.commit()
+        finally:
+            conn.close()
 
         # Merge should still succeed by introspecting common columns
         result = merge_summaries_databases(self.local_db, self.remote_db)
         self.assertEqual(result.inserted, 1)
 
-        with sqlite3.connect(self.local_db) as conn:
+        conn = sqlite3.connect(self.local_db)
+        try:
             row = conn.execute("SELECT conversation_id, title FROM conversation_summaries WHERE conversation_id='id-C'").fetchone()
             self.assertEqual(row[0], "id-C")
             self.assertEqual(row[1], "Chat from updated Antigravity")
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":
