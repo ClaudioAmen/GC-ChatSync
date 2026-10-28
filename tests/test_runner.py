@@ -1,6 +1,7 @@
 """Unit tests for SyncRunner and orchestration."""
 
 import sqlite3
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,8 +87,11 @@ class TestSyncRunner(unittest.TestCase):
 
         with sqlite3.connect(db_path) as conn:
             row = conn.execute("SELECT workspace_uris FROM conversation_summaries WHERE conversation_id='cid-1'").fetchone()
-            # On Linux, this should be translated to /home/...
-            self.assertIn("/home/", row[0])
+            if sys.platform == "win32":
+                self.assertIn("file:///c:", row[0].lower())
+            else:
+                self.assertTrue(row[0].startswith('["file:///'))
+                self.assertNotIn("C:/Users", row[0])
 
     @patch("gc_chatsync.runner.is_session_dirty")
     @patch("gc_chatsync.drive.DriveClient.get_manifest")

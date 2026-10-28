@@ -44,6 +44,12 @@ class RcloneError(Exception):
 
 NOT_FOUND_CODES = {3, 4}
 
+RCLONE_PERF_FLAGS = [
+    "--checkers", "4",
+    "--transfers", "4",
+    "--drive-chunk-size", "32M",
+]
+
 
 class RcloneNotFoundError(RcloneError):
     """Raised when rclone executable is not found on PATH."""
@@ -152,23 +158,25 @@ class DriveClient:
             raise RcloneError(f"rclone command timed out after {timeout} seconds: {e}") from e
 
     def test_connection(self) -> bool:
-        """Check if remote is accessible and authorized (fast directory/quota ping)."""
+        """Check if remote is accessible and authorized (fast directory ping without slow quota checks)."""
         try:
-            self.run_cmd(["about", f"{self.remote_name}:"], timeout=20, log_errors=False)
+            self.run_cmd(["lsf", self.remote_base, "--max-depth", "1"], timeout=10, log_errors=False)
             return True
-        except Exception:
-            try:
-                self.run_cmd(["lsd", self.remote_base], timeout=20, log_errors=False)
+        except RcloneError as e:
+            if e.returncode in NOT_FOUND_CODES:
+                # Target folder does not exist yet on remote, but remote connection is verified
                 return True
-            except Exception as e:
-                logger.warning(f"Google Drive connection test failed: {e}")
-                return False
+            logger.warning(f"Google Drive connection test failed: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"Google Drive connection test failed: {e}")
+            return False
 
     def get_manifest(self) -> Optional[SyncManifest]:
         """Fetch cloud manifest if it exists.
         
-        Returns None if remote file does not exist (exit code 3 or 4, or not found).
-        Raises RcloneError if network, auth, or timeout error occurred.
+        Returns None if remote file does not exist (exit code 3 or 4).
+        Raises RcloneError if network, auth, timeout, or JSON corruption occurred.
         """
         remote_path = f"{self.remote_base}/manifest.json"
         try:
@@ -176,12 +184,12 @@ class DriveClient:
             data = json.loads(output)
             return SyncManifest.from_dict(data)
         except RcloneError as e:
-            if e.returncode in NOT_FOUND_CODES or "not found" in str(e).lower():
+            if e.returncode in NOT_FOUND_CODES:
                 return None
             raise
         except json.JSONDecodeError as e:
-            logger.warning(f"Corrupted remote manifest.json: {e}")
-            return None
+            logger.error(f"Corrupted remote manifest.json: {e}")
+            raise RcloneError(f"Corrupted remote manifest.json: {e}") from e
 
     def put_manifest(self, manifest: SyncManifest) -> None:
         """Upload sync manifest to Google Drive."""
@@ -203,10 +211,10 @@ class DriveClient:
         remote_file = f"{self.remote_base}/conversation_summaries.db"
         local_staging_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            self.run_cmd(["copyto", remote_file, str(local_staging_path)], timeout=60, log_errors=False)
+            self.run_cmd(["copyto", remote_file, str(local_staging_path)] + RCLONE_PERF_FLAGS, timeout=60, log_errors=False)
             return local_staging_path.is_file()
         except RcloneError as e:
-            if e.returncode in NOT_FOUND_CODES or "not found" in str(e).lower():
+            if e.returncode in NOT_FOUND_CODES:
                 logger.debug(f"Remote conversation_summaries.db not found on Drive (clean remote): {e}")
                 return False
             raise
@@ -216,20 +224,20 @@ class DriveClient:
         if not local_db_path.is_file():
             raise FileNotFoundError(f"Local database not found: {local_db_path}")
         remote_file = f"{self.remote_base}/conversation_summaries.db"
-        self.run_cmd(["copyto", str(local_db_path), remote_file], timeout=60)
+        self.run_cmd(["copyto", str(local_db_path), remote_file] + RCLONE_PERF_FLAGS, timeout=60)
         logger.info("Uploaded conversation_summaries.db to Google Drive")
 
     def pull_conversations(self, local_conversations_dir: Path) -> None:
         """Download new/updated conversation session databases from remote."""
         local_conversations_dir.mkdir(parents=True, exist_ok=True)
         remote_dir = f"{self.remote_base}/conversations"
-        args = ["copy", remote_dir, str(local_conversations_dir), "--update", "--transfers", "8", "--fast-list"]
+        args = ["copy", remote_dir, str(local_conversations_dir), "--update", "--fast-list"] + RCLONE_PERF_FLAGS
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
         try:
             self.run_cmd(args, timeout=180, log_errors=False)
         except RcloneError as e:
-            if e.returncode in NOT_FOUND_CODES or "not found" in str(e).lower():
+            if e.returncode in NOT_FOUND_CODES:
                 logger.debug(f"Remote conversations folder not found on Drive (clean remote): {e}")
             else:
                 raise
@@ -239,7 +247,7 @@ class DriveClient:
         if not local_conversations_dir.is_dir():
             return
         remote_dir = f"{self.remote_base}/conversations"
-        args = ["copy", str(local_conversations_dir), remote_dir, "--update", "--transfers", "8", "--fast-list"]
+        args = ["copy", str(local_conversations_dir), remote_dir, "--update", "--fast-list"] + RCLONE_PERF_FLAGS
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
         self.run_cmd(args, timeout=180)
@@ -248,13 +256,13 @@ class DriveClient:
         """Download new/updated brain artifacts and transcripts from remote."""
         local_brain_dir.mkdir(parents=True, exist_ok=True)
         remote_dir = f"{self.remote_base}/brain"
-        args = ["copy", remote_dir, str(local_brain_dir), "--update", "--transfers", "8", "--fast-list"]
+        args = ["copy", remote_dir, str(local_brain_dir), "--update", "--fast-list"] + RCLONE_PERF_FLAGS
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
         try:
             self.run_cmd(args, timeout=300, log_errors=False)
         except RcloneError as e:
-            if e.returncode in NOT_FOUND_CODES or "not found" in str(e).lower():
+            if e.returncode in NOT_FOUND_CODES:
                 logger.debug(f"Remote brain folder not found on Drive (clean remote): {e}")
             else:
                 raise
@@ -264,7 +272,7 @@ class DriveClient:
         if not local_brain_dir.is_dir():
             return
         remote_dir = f"{self.remote_base}/brain"
-        args = ["copy", str(local_brain_dir), remote_dir, "--update", "--transfers", "8", "--fast-list"]
+        args = ["copy", str(local_brain_dir), remote_dir, "--update", "--fast-list"] + RCLONE_PERF_FLAGS
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
         self.run_cmd(args, timeout=300)
@@ -273,11 +281,11 @@ class DriveClient:
         """Download remote project definitions into a staging directory for translation."""
         local_projects_staging.mkdir(parents=True, exist_ok=True)
         remote_dir = f"{self.remote_base}/projects"
-        args = ["copy", remote_dir, str(local_projects_staging), "--update", "--transfers", "8", "--fast-list"]
+        args = ["copy", remote_dir, str(local_projects_staging), "--update", "--fast-list"] + RCLONE_PERF_FLAGS
         try:
             self.run_cmd(args, timeout=120, log_errors=False)
         except RcloneError as e:
-            if e.returncode in NOT_FOUND_CODES or "not found" in str(e).lower():
+            if e.returncode in NOT_FOUND_CODES:
                 logger.debug(f"Remote projects folder not found on Drive (clean remote): {e}")
             else:
                 raise
@@ -287,5 +295,5 @@ class DriveClient:
         if not local_projects_dir.is_dir():
             return
         remote_dir = f"{self.remote_base}/projects"
-        args = ["copy", str(local_projects_dir), remote_dir, "--update", "--transfers", "8", "--fast-list", "--local-no-check-updated"]
+        args = ["copy", str(local_projects_dir), remote_dir, "--update", "--fast-list"] + RCLONE_PERF_FLAGS
         self.run_cmd(args, timeout=120)

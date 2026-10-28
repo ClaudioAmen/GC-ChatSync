@@ -103,7 +103,7 @@ class TestDriveClient(unittest.TestCase):
     def test_pull_handles_directory_not_found(self, mock_run, mock_which):
         mock_which.return_value = "/usr/bin/rclone"
         mock_res = MagicMock()
-        mock_res.returncode = 1
+        mock_res.returncode = 3
         mock_res.stderr = "error reading source root directory: directory not found"
         mock_run.return_value = mock_res
 

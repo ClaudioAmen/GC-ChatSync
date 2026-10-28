@@ -48,11 +48,12 @@ Simply pointing general-purpose cloud storage clients (such as Google Drive for 
 
 `GC-ChatSync` (`gc-chatsync`) is an intelligent, lightweight synchronization wrapper and graphical dashboard built with **Python 3.10+ standard library** and **`rclone`**:
 
-- 🖥️ **Modern Graphical Dashboard (`GUI`):** Built-in dark/light GUI that automatically follows your operating system theme, providing one-click launch, real-time sync status, and integrated logging.
-- 🔒 **Safe Lifecycle Execution:** Synchronizes *before* Antigravity opens (PULL) and *after* it exits (PUSH), guaranteeing that database files are never touched while locked.
-- 🔀 **Intelligent SQL Index Merging:** Performs two-way incremental merges on `conversation_summaries.db` using `ATTACH DATABASE` and dynamic column discovery. Inserts missing conversations and only updates existing records when `remote.last_modified_time > local.last_modified_time`.
+- 🖥️ **Modern Graphical Dashboard (`GUI`):** Built-in dark/light GUI that automatically follows your operating system theme, featuring a real-time progress bar (`ttk.Progressbar`) with percentage tracking and step-by-step descriptions, one-click launch, real-time sync status, and integrated logging.
+- ⚡ **High-Speed Parallel Synchronization:** Uses multi-threaded parallel transfers (`ThreadPoolExecutor`) across conversations, brain artifacts, and projects, coupled with optimized rclone flags (`--checkers 16`, `--drive-chunk-size 32M`, `--drive-pacer-min-sleep 10ms`) for maximum throughput.
+- 🔒 **Safe Lifecycle Execution & Offline Protection:** Synchronizes *before* Antigravity opens (PULL) and *after* it exits (PUSH). If offline or disconnected, Antigravity launches in local-only mode and the cloud push is safely suppressed on exit to prevent overwriting remote history.
+- 🔀 **Intelligent SQL Index Merging & Schema Guard:** Performs two-way incremental merges on `conversation_summaries.db` using `ATTACH DATABASE` and dynamic column discovery. If incompatible database schemas are detected (`DatabaseMergeError`), synchronization halts immediately to prevent data corruption.
 - 🛡️ **Non-Destructive File Sync:** Uses `rclone copy --update` instead of destructive `sync` commands, ensuring files are never deleted remotely by a local deletion or vice versa.
-- 💾 **Online SQLite Backups:** Utilizes SQLite's native online backup API (`conn.backup()`) and `PRAGMA wal_checkpoint(TRUNCATE)` to generate clean, crash-safe snapshots in `.backups/` (retaining the 5 most recent snapshots).
+- 💾 **Online SQLite Backups & Lock-Free Snapshots:** Utilizes SQLite's native online backup API (`conn.backup()`) and `PRAGMA wal_checkpoint(TRUNCATE)` for both global index and session databases, generating clean, crash-safe snapshots in staging before uploading, and retaining the 5 most recent snapshots in `.backups/`.
 - 🔢 **Monotonic Cloud Epochs (`manifest.json`):** Tracks cloud state with strictly increasing epoch numbers and per-device tokens, eliminating false updates caused by clock skew between machines.
 - 🚨 **Crash & Dirty Session Recovery:** Tracks session state via `.session_dirty`. If your machine suddenly powers off or reboots during a session, the next launch warns you and safely flushes unsaved local changes to the cloud.
 - 🔄 **Cross-Platform Workspace Translation:** Automatically translates workspace URIs in projects (`projects/*.json`) and conversation summaries between Windows (`C:/Users/...`) and Linux (`/home/...`), with support for custom root path mappings.
@@ -211,10 +212,12 @@ gc-chatsync setup
 
 ## ⚠️ Known Limitations & Troubleshooting
 
+- **Cloud Provider Latency & API Rate Limits:** GC-ChatSync synchronizes with personal Google Drive accounts via Google's official REST APIs. Because Google Drive enforces strict per-user rate limits (~10 requests/second), network round-trips, and OAuth token refreshes, small operational delays (typically 1–4 seconds during startup checks or post-exit pushes) are normal. Concurrency parameters are intentionally balanced (`--checkers 4`, `--transfers 4`, 32MB buffer chunks) to operate smoothly right below Google's throttling thresholds without triggering exponential backoff delays.
 - **First Run on Second PC:** When launching GC-ChatSync on your second PC for the first time, use `gc-chatsync pull -f` (or click **"Riprova / Pull"** in the GUI) to pull the initial history from Drive.
 - **Non-Destructive Deletions:** Because GC-ChatSync uses `copy --update` to safeguard your chat history, a conversation database deleted on one PC is not deleted from Google Drive.
 - **Active Witness Tracking:** The cloud manifest tracks active sessions (`active_device`). If a machine powers off unexpectedly, the other machine warns you and performs a safety merge before pushing.
-- **Schema Safety & Version Tracking:** GC-ChatSync records the Antigravity application version in the cloud manifest. If database schemas differ between devices, GC-ChatSync halts the merge to prevent column or metadata loss, prompting the user to update both installations.
+- **Schema Safety & Version Tracking:** GC-ChatSync inspects the real Antigravity IDE version from runtime logs and records it in the cloud manifest. If an irreconcilable schema mismatch occurs (`DatabaseMergeError`), GC-ChatSync immediately halts execution and displays an alert to prevent data corruption.
+- **Offline Mode Safety:** If the network is unavailable or Google Drive cannot be contacted during startup, Antigravity launches safely in local-only mode, and the post-exit push is automatically suppressed so that unmerged local data never overwrites or destroys cloud history.
 - **Shortcut Re-patching:** An official Antigravity application update may overwrite the desktop `.desktop` file or shortcut; simply run `gc-chatsync install-shortcut` to re-hook GC-ChatSync.
 - **Log Files:** Persistent session logs are written to `~/.config/gc-chatsync/logs/sync.log` (`%APPDATA%\gc-chatsync\logs\sync.log` on Windows) with automatic 5MB rotation.
 - **Active Lock:** If you see `Another GC-ChatSync instance is already running`, an active process is currently holding the sync lock. If a process was terminated abruptly, stale locks are automatically recovered on the subsequent run.
@@ -229,9 +232,13 @@ gc-chatsync setup
 - [x] Monotonic cloud revision epochs (`manifest.json`)
 - [x] Cross-platform workspace path translation (`C:\...` $\leftrightarrow$ `/home/...`)
 - [x] Modern Tkinter GUI with automatic Dark/Light system theme detection
+- [x] Real-time visual progress bar (`ttk.Progressbar`) with step-by-step percentage tracking
+- [x] Multi-threaded parallel sync (`ThreadPoolExecutor` + high-speed rclone buffer flags)
+- [x] Strict schema-mismatch halting & offline push suppression safety guarantees
 - [x] Desktop shortcut integration and one-click rollback (`.bak`)
 - [x] Zero-effort AI onboarding prompt (`AI_PROMPT.md`)
 - [ ] Direct support for macOS paths
+- [ ] Internationalization (i18n) and automatic system-locale language selection
 
 ---
 

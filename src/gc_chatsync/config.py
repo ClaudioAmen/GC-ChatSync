@@ -144,18 +144,47 @@ def find_antigravity_executable() -> Optional[Path]:
 
 
 def get_antigravity_version(bin_path: Optional[str] = None) -> Optional[str]:
-    """Detect Antigravity version from the installation directory if available."""
+    """Detect Antigravity application version from user logs or installation directory."""
+    # 1. Try reading real Antigravity IDE version from recent logs
+    log_candidates = []
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            log_candidates.append(Path(appdata) / "Antigravity" / "logs" / "main.log")
+            log_candidates.append(Path(appdata) / "Antigravity" / "logs" / "language_server.log")
+    else:
+        home = Path.home()
+        log_candidates.append(home / ".config" / "Antigravity" / "logs" / "main.log")
+        log_candidates.append(home / ".config" / "Antigravity" / "logs" / "language_server.log")
+
+    for log_path in log_candidates:
+        if log_path.is_file():
+            try:
+                size = log_path.stat().st_size
+                with open(log_path, "rb") as f:
+                    if size > 30000:
+                        f.seek(size - 30000)
+                    text = f.read().decode("utf-8", errors="ignore")
+                matches = re.findall(
+                    r"(?:Starting app \(v|Language server version:\s*)([0-9]+\.[0-9]+\.[0-9]+)",
+                    text,
+                )
+                if matches:
+                    return matches[-1]
+            except Exception:
+                pass
+
+    # 2. Fallback to version file next to executable if present
     target_bin = Path(bin_path) if bin_path else find_antigravity_executable()
-    if not target_bin:
-        return None
-    try:
-        version_file = target_bin.parent / "version"
-        if version_file.is_file():
-            ver = version_file.read_text(encoding="utf-8").strip()
-            if ver:
-                return ver
-    except Exception:
-        pass
+    if target_bin:
+        try:
+            version_file = target_bin.parent / "version"
+            if version_file.is_file():
+                ver = version_file.read_text(encoding="utf-8").strip()
+                if ver:
+                    return ver
+        except Exception:
+            pass
     return None
 
 

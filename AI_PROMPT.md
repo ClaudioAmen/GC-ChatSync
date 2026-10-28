@@ -72,8 +72,8 @@ Please perform the following onboarding workflow step-by-step:
    - Local paths are detected correctly.
    - Sync alignment status is reported.
 2. Inform me that the setup is complete and explain:
-   - Clicking the Antigravity desktop icon will now open the GC-ChatSync dashboard with dark/light auto-theme.
-   - Clicking **"Sincronizza e Avvia Antigravity"** will pull any new chats from Google Drive, launch Antigravity, and automatically push updates on close.
-   - Clicking **"⚡ Bypassa Sync e Avvia normalmente"** launches Antigravity directly without running cloud pull or push.
+   - Clicking the Antigravity desktop icon will now open the GC-ChatSync dashboard with dark/light auto-theme and real-time visual progress bar (`ttk.Progressbar`).
+   - Clicking **"🚀 Launch Antigravity (Auto-Sync)"** pulls any new chats in parallel from Google Drive, launches Antigravity, and automatically pushes updates on close (brief 1-3 second network delays during checks are normal due to Google Drive API round-trips and rate limits).
+   - Clicking **"⚡ Bypass Sync & Launch Directly"** launches Antigravity directly without running cloud pull or push.
    - I can also launch directly from CLI using `gc-chatsync launch` or run manual synchronizations with `gc-chatsync pull` and `gc-chatsync push`.
 ```

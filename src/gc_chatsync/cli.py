@@ -184,19 +184,19 @@ def cmd_setup(args: argparse.Namespace) -> int:
         print("⚠️ Warning: Google Drive connection failed. Please ensure 'rclone config' is configured.\n")
 
     # Desktop shortcut integration
-    integrate_input = input("Vuoi collegare GC-ChatSync alla tua icona abituale di Antigravity? [S/n]: ").strip().lower()
+    integrate_input = input("Connect GC-ChatSync directly to standard Antigravity application icon? [Y/n]: ").strip().lower()
     if integrate_input not in ("n", "no"):
         from gc_chatsync.desktop import integrate_desktop_shortcut
         if integrate_desktop_shortcut(backup=True):
-            print("✅ Icona abituale di Antigravity collegata con successo (backup salvato)!\n")
+            print("✅ Standard Antigravity application icon linked successfully (backup saved)!\n")
         else:
-            print("⚠️ Impossibile aggiornare l'icona automaticamente (puoi riprovare con: gc-chatsync install-shortcut).\n")
+            print("⚠️ Could not update desktop shortcut automatically (you can retry with: gc-chatsync install-shortcut).\n")
     else:
         from gc_chatsync.desktop import create_standalone_shortcut
         if create_standalone_shortcut():
-            print("✅ Icona separata 'GC-ChatSync (Antigravity)' creata con successo!\n")
+            print("✅ Standalone 'GC-ChatSync (Antigravity)' desktop shortcut created successfully!\n")
         else:
-            print("⚠️ Impossibile creare l'icona separata.\n")
+            print("⚠️ Could not create standalone desktop shortcut.\n")
 
     return 0
 
@@ -308,12 +308,12 @@ def _cmd_install_shortcut(args: argparse.Namespace) -> int:
     if getattr(args, "standalone", False):
         success = create_standalone_shortcut()
         if success:
-            print("✅ Icona separata 'GC-ChatSync (Antigravity)' creata con successo.")
+            print("✅ Standalone 'GC-ChatSync (Antigravity)' shortcut created successfully.")
         return 0 if success else 1
     else:
         success = integrate_desktop_shortcut(backup=True)
         if success:
-            print("✅ Icona abituale di Antigravity collegata a GC-ChatSync (backup salvato).")
+            print("✅ Standard Antigravity application icon linked to GC-ChatSync (backup saved).")
         return 0 if success else 1
 
 
@@ -322,7 +322,7 @@ def _cmd_restore_shortcut(args: argparse.Namespace) -> int:
     from gc_chatsync.desktop import restore_desktop_shortcut
     success = restore_desktop_shortcut()
     if success:
-        print("✅ Icona originale di Antigravity ripristinata dal backup.")
+        print("✅ Original Antigravity application icon restored from backup.")
     return 0 if success else 1
 
 

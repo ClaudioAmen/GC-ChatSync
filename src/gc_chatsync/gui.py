@@ -29,8 +29,9 @@ from gc_chatsync.config import (
     get_system_name,
     load_config,
 )
-from gc_chatsync.drive import SyncManifest
+from gc_chatsync.drive import RcloneError, SyncManifest
 from gc_chatsync.lock import mark_session_dirty
+from gc_chatsync.merger import DatabaseMergeError
 from gc_chatsync.runner import SyncRunner, SyncStatus
 from gc_chatsync.theme import Palette, get_palette
 
@@ -73,8 +74,8 @@ class ChatSyncGUI:
         self.root = root
         self.palette = palette or get_palette()
         self.root.title(f"GC-ChatSync v{__version__}")
-        self.root.geometry("600x600")
-        self.root.minsize(540, 520)
+        self.root.geometry("680x740")
+        self.root.minsize(620, 680)
         self.root.configure(bg=self.palette.bg)
 
         self.config: AppConfig = load_config()
@@ -147,6 +148,10 @@ class ChatSyncGUI:
                         arrowcolor=p.muted, relief="flat")
         style.map("Vertical.TScrollbar", background=[("active", p.button_hover)])
 
+        style.configure("Horizontal.TProgressbar", background=p.accent, troughcolor=p.surface,
+                        bordercolor=p.border, lightcolor=p.accent, darkcolor=p.accent,
+                        relief="flat")
+
     # ---------------------------------------------------------------------- UI
     def _card(self, parent: "ttk.Frame", title: str) -> "ttk.Frame":
         """Create a flat card with a small uppercase title and return its body."""
@@ -167,17 +172,17 @@ class ChatSyncGUI:
         header = ttk.Frame(main_frame)
         header.pack(fill="x", pady=(0, 12))
         ttk.Label(header, text="🌌 GC-ChatSync", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(header, text="Sincronizzazione Google Drive per Google Antigravity",
+        ttk.Label(header, text="Google Drive Synchronization for Google Antigravity",
                   style="SubHeader.TLabel").pack(anchor="w")
 
         # 2. Status card
-        status_body = self._card(main_frame, "Stato sincronizzazione")
+        status_body = self._card(main_frame, "Synchronization Status")
         status_body.columnconfigure(1, weight=1)
         rows = [
-            ("Questo computer", "lbl_device", self.config.device_id),
-            ("Google Drive", "lbl_drive_status", "Verifica in corso..."),
-            ("Ultimo nel cloud", "lbl_cloud_last", "--"),
-            ("Allineamento", "lbl_alignment", "--"),
+            ("This Computer", "lbl_device", self.config.device_id),
+            ("Google Drive", "lbl_drive_status", "Checking connection..."),
+            ("Last Cloud Sync", "lbl_cloud_last", "--"),
+            ("Alignment", "lbl_alignment", "--"),
         ]
         for i, (key, attr, value) in enumerate(rows):
             ttk.Label(status_body, text=key, style="StatusKey.TLabel").grid(
@@ -190,12 +195,12 @@ class ChatSyncGUI:
         actions = ttk.Frame(main_frame)
         actions.pack(fill="x", pady=(12, 6))
 
-        self.btn_run = ttk.Button(actions, text="🚀  Avvia Antigravity (sync automatico)",
+        self.btn_run = ttk.Button(actions, text="🚀  Launch Antigravity (Auto-Sync)",
                                   style="Primary.TButton", command=self.on_run_clicked,
                                   cursor="hand2")
         self.btn_run.pack(fill="x")
 
-        self.btn_bypass = ttk.Button(actions, text="⚡  Bypassa Sync e Avvia normalmente",
+        self.btn_bypass = ttk.Button(actions, text="⚡  Bypass Sync & Launch Directly",
                                      style="Secondary.TButton", command=self.on_bypass_clicked,
                                      cursor="hand2")
         self.btn_bypass.pack(fill="x", pady=(6, 0))
@@ -204,25 +209,36 @@ class ChatSyncGUI:
         secondary.pack(fill="x", pady=(8, 0))
         secondary.columnconfigure((0, 1, 2), weight=1, uniform="btn")
 
-        self.btn_pull = ttk.Button(secondary, text="🔄  Riprova / Pull", style="Secondary.TButton",
+        self.btn_pull = ttk.Button(secondary, text="🔄  Force Pull", style="Secondary.TButton",
                                    command=self.on_pull_clicked, cursor="hand2")
-        self.btn_push = ttk.Button(secondary, text="⬆️  Forza Push", style="Secondary.TButton",
+        self.btn_push = ttk.Button(secondary, text="⬆️  Force Push", style="Secondary.TButton",
                                    command=self.on_push_clicked, cursor="hand2")
-        self.btn_refresh = ttk.Button(secondary, text="🔍  Aggiorna stato", style="Secondary.TButton",
+        self.btn_refresh = ttk.Button(secondary, text="🔍  Refresh Status", style="Secondary.TButton",
                                       command=self.refresh_status_async, cursor="hand2")
         self.btn_pull.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.btn_push.grid(row=0, column=1, sticky="ew", padx=4)
         self.btn_refresh.grid(row=0, column=2, sticky="ew", padx=(4, 0))
 
+        # 3b. Visual progress section
+        self.progress_frame = ttk.Frame(main_frame)
+        self.progress_frame.pack(fill="x", pady=(10, 4))
+
+        self.lbl_progress_step = ttk.Label(self.progress_frame, text="", style="StatusKey.TLabel", font=(FONT_FAMILY, 9))
+        self.lbl_progress_step.pack(anchor="w", pady=(0, 3))
+
+        self.progress_bar = ttk.Progressbar(self.progress_frame, orient="horizontal", mode="determinate", maximum=100)
+        self.progress_bar.pack(fill="x")
+        self.progress_bar["value"] = 0
+
         # 4. Activity log
-        ttk.Label(main_frame, text="REGISTRO ATTIVITÀ", style="SubHeader.TLabel",
+        ttk.Label(main_frame, text="ACTIVITY LOG", style="SubHeader.TLabel",
                   font=(FONT_FAMILY, 9, "bold")).pack(anchor="w", pady=(14, 4))
         log_frame = tk.Frame(main_frame, bg=p.log_bg, highlightthickness=1,
                              highlightbackground=p.border, highlightcolor=p.border)
         log_frame.pack(fill="both", expand=True)
 
         self.log_text = tk.Text(
-            log_frame, height=8, wrap="word", font=(MONO_FAMILY, 9), state="disabled",
+            log_frame, height=11, wrap="word", font=(MONO_FAMILY, 9), state="disabled",
             bg=p.log_bg, fg=p.log_fg, insertbackground=p.log_fg, relief="flat",
             borderwidth=0, highlightthickness=0, padx=10, pady=8,
             selectbackground=p.accent, selectforeground=p.accent_fg,
@@ -240,9 +256,9 @@ class ChatSyncGUI:
         # 5. Footer
         footer = ttk.Frame(main_frame)
         footer.pack(fill="x", pady=(8, 0))
-        ttk.Button(footer, text="📄 Apri file di log", style="Link.TButton",
+        ttk.Button(footer, text="📄 View Log File", style="Link.TButton",
                    command=self.open_log_file, cursor="hand2").pack(side="left")
-        self.lbl_status_bar = ttk.Label(footer, text="Pronto.", style="Footer.TLabel")
+        self.lbl_status_bar = ttk.Label(footer, text="Ready.", style="Footer.TLabel")
         self.lbl_status_bar.pack(side="right")
 
     # ----------------------------------------------------------------- helpers
@@ -257,7 +273,7 @@ class ChatSyncGUI:
 
     def refresh_status_async(self) -> None:
         """Fetch status in a background thread."""
-        self.lbl_status_bar.configure(text="Controllo stato Google Drive...")
+        self.lbl_status_bar.configure(text="Checking Google Drive status...")
 
         def worker() -> None:
             status = self.runner.get_status()
@@ -268,46 +284,62 @@ class ChatSyncGUI:
     def _apply_status(self, status: SyncStatus) -> None:
         p = self.palette
         if status.drive_connected:
-            self.lbl_drive_status.configure(text="● Collegato", foreground=p.success)
+            self.lbl_drive_status.configure(text="● Connected", foreground=p.success)
             if status.cloud_last_device:
                 when = (status.cloud_last_sync_utc or "")[:16].replace("T", " ")
                 epoch_str = f" [rev {status.cloud_epoch}]" if status.cloud_epoch else ""
                 self.lbl_cloud_last.configure(text=f"{status.cloud_last_device}{epoch_str}  ·  {when} UTC")
             else:
-                self.lbl_cloud_last.configure(text="Nessuna sincronizzazione precedente")
+                self.lbl_cloud_last.configure(text="No previous cloud sync")
 
             if status.active_device and status.active_device != self.runner.config.device_id:
                 when_active = (status.active_since_utc or "")[:16].replace("T", " ")
-                self.lbl_alignment.configure(text=f"⚠️ {status.active_device} attivo dal {when_active} UTC (sessione precedente)", foreground=p.warning)
+                self.lbl_alignment.configure(text=f"⚠️ {status.active_device} active since {when_active} UTC (previous session)", foreground=p.warning)
             elif status.session_dirty:
-                self.lbl_alignment.configure(text="⚠️ Push pendente da sessione precedente (premi Forza Push)", foreground=p.warning)
+                self.lbl_alignment.configure(text="⚠️ Pending push from previous session (click Force Push)", foreground=p.warning)
             elif status.cloud_last_device is None:
-                self.lbl_alignment.configure(text="● Cloud vuoto (in attesa del primo push da una macchina)", foreground=p.fg_subtle)
+                self.lbl_alignment.configure(text="● Cloud empty (waiting for initial push)", foreground=p.fg_subtle)
             elif status.in_sync:
-                self.lbl_alignment.configure(text="● Allineato con il cloud", foreground=p.success)
+                self.lbl_alignment.configure(text="● In sync with cloud", foreground=p.success)
             else:
-                self.lbl_alignment.configure(text=f"● Aggiornamenti disponibili da {status.cloud_last_device}", foreground=p.warning)
+                self.lbl_alignment.configure(text=f"● Updates available from {status.cloud_last_device}", foreground=p.warning)
         else:
-            self.lbl_drive_status.configure(text="● Non raggiungibile (verifica rclone)", foreground=p.error)
+            self.lbl_drive_status.configure(text="● Unreachable (check rclone config)", foreground=p.error)
             self.lbl_cloud_last.configure(text="--")
             self.lbl_alignment.configure(text="--", foreground=p.fg)
 
-        self.lbl_status_bar.configure(text="Pronto.")
+        self.lbl_status_bar.configure(text="Ready.")
+
+    def _set_progress(self, percent: int, description: str) -> None:
+        """Update progress bar value and status text on the GUI."""
+        self.progress_bar["value"] = percent
+        if description:
+            self.lbl_progress_step.configure(text=f"{description} ({percent}%)")
+            self.lbl_status_bar.configure(text=description)
+        else:
+            self.lbl_progress_step.configure(text="")
 
     def _run_in_background(self, busy_text: str, task, on_success_msg: str | None, error_title: str) -> None:
         """Disable buttons, run `task` in a thread, report the result, refresh status."""
         self._set_buttons_state(False)
         self.lbl_status_bar.configure(text=busy_text)
+        self._set_progress(10, busy_text)
 
         def worker() -> None:
             try:
-                result = task()
+                def on_progress(pct: int, msg: str) -> None:
+                    self.root.after(0, lambda: self._set_progress(pct, msg))
+
+                result = task(on_progress)
                 if on_success_msg and result is not False:
+                    self.root.after(0, lambda: self._set_progress(100, on_success_msg))
                     logger.info(on_success_msg)
                     self.root.after(0, lambda: messagebox.showinfo("GC-ChatSync", on_success_msg))
                 elif result is False:
-                    logger.warning("Operazione non riuscita: controlla la connessione e il file di log.")
+                    self.root.after(0, lambda: self._set_progress(0, "Operation could not be completed."))
+                    logger.warning("Operation failed: check connection and log file.")
             except Exception as e:
+                self.root.after(0, lambda: self._set_progress(0, f"Error: {e}"))
                 logger.error(f"{error_title}: {e}", exc_info=True)
                 self.root.after(0, lambda: messagebox.showerror(error_title, str(e)))
             finally:
@@ -323,89 +355,142 @@ class ChatSyncGUI:
         if self.is_running:
             return
 
-        # Check if another device has an unclosed active session
-        try:
-            status = self.runner.get_status()
-            if status.active_device and status.active_device != self.runner.config.device_id:
-                when_str = (status.active_since_utc or "")[:16].replace("T", " ")
-                proceed = messagebox.askyesno(
-                    "GC-ChatSync: Sessione attiva rilevata",
-                    f"Attenzione: Il dispositivo '{status.active_device}' risulta ancora attivo dal {when_str} UTC.\n\n"
-                    "Se l'altra macchina non ha chiuso normalmente, le sue ultime modifiche potrebbero non essere su Google Drive.\n\n"
-                    "Vuoi continuare e avviare comunque?",
-                )
-                if not proceed:
-                    return
-        except Exception:
-            pass
-
         self.is_running = True
         self._set_buttons_state(False)
-        self.lbl_status_bar.configure(text="Sincronizzazione da Google Drive in corso...")
+        self._set_progress(5, "Checking cloud status and active sessions...")
 
         def lifecycle_worker() -> None:
+            cancel_witness = threading.Event()
+            witness_thread = None
+
             try:
-                # 1. PULL (proceed in offline mode if pull fails)
+                def update_progress(pct: int, msg: str) -> None:
+                    self.root.after(0, lambda: self._set_progress(pct, msg))
+
+                # 1. Check if another device has an unclosed active session (in background thread)
                 try:
-                    self.runner.pull()
+                    manifest = self.runner.drive.get_manifest()
+                    if manifest and manifest.active_device and manifest.active_device != self.runner.config.device_id:
+                        when_str = (manifest.active_since_utc or "")[:16].replace("T", " ")
+                        proceed_event = threading.Event()
+                        proceed_answer = [False]
+
+                        def ask_dialog() -> None:
+                            proceed_answer[0] = messagebox.askyesno(
+                                "GC-ChatSync: Active Session Detected",
+                                f"Warning: Device '{manifest.active_device}' appears still active since {when_str} UTC.\n\n"
+                                "If the other computer did not close gracefully, its latest changes might not be on Google Drive.\n\n"
+                                "Do you want to continue and launch anyway?",
+                            )
+                            proceed_event.set()
+
+                        self.root.after(0, ask_dialog)
+                        proceed_event.wait()
+                        if not proceed_answer[0]:
+                            self.root.after(0, lambda: self._set_buttons_state(True))
+                            self.root.after(0, lambda: self._set_progress(0, "Launch cancelled by user."))
+                            return
                 except Exception as e:
-                    logger.warning(f"Pull could not complete ({e}). Proceeding in offline mode.")
+                    logger.debug(f"Cloud session check skipped: {e}")
 
-                self.root.after(0, lambda: self.lbl_status_bar.configure(text="Avvio di Antigravity in corso..."))
+                # 2. PULL
+                pull_ok = False
+                try:
+                    pull_ok = self.runner.pull(progress_cb=update_progress)
+                except DatabaseMergeError as e:
+                    logger.critical(f"Schema conflict detected: {e}")
+                    def show_conflict() -> None:
+                        self.root.deiconify()
+                        self._set_progress(0, "Launch halted: schema conflict.")
+                        messagebox.showerror(
+                            "GC-ChatSync: Schema Conflict",
+                            f"Synchronization stopped for safety:\n\n{e}\n\n"
+                            "To prevent conversation or metadata loss in the cloud, "
+                            "please update Antigravity to the same version on all devices.",
+                        )
+                        self._set_buttons_state(True)
+                        self.refresh_status_async()
 
-                # Mark session dirty before launching the editor
+                    self.root.after(0, show_conflict)
+                    return
+                except Exception as e:
+                    logger.warning(f"Pull failed due to network error ({e}). Proceeding in offline mode.")
+                    pull_ok = False
+
+                if not pull_ok:
+                    # Offline mode: launch Antigravity, but skip push upon close
+                    self.root.after(0, lambda: self._set_progress(50, "Offline mode: launching Antigravity..."))
+                    def on_app_started() -> None:
+                        self.root.after(0, self.root.withdraw)
+
+                    self.runner.launch_app(on_launched=on_app_started)
+                    self.root.after(0, self.root.destroy)
+                    return
+
+                # Online mode: claim active witness in a synchronized thread
                 mark_session_dirty(self.runner.config.device_id)
 
-                # Claim active witness asynchronously so Drive latency never delays launching Antigravity
-                def claim_witness_async() -> None:
+                def claim_witness_worker() -> None:
                     try:
-                        manifest = self.runner.drive.get_manifest()
-                        curr_epoch = manifest.epoch if manifest else 1
-                        curr_last = manifest.last_device if manifest else ""
+                        if cancel_witness.is_set():
+                            return
+                        curr_m = self.runner.drive.get_manifest()
+                        if cancel_witness.is_set():
+                            return
+                        curr_epoch = curr_m.epoch if curr_m else 1
+                        curr_last = curr_m.last_device if curr_m else ""
                         witness_manifest = SyncManifest(
                             last_device=curr_last,
-                            last_sync_utc=manifest.last_sync_utc if manifest else "",
+                            last_sync_utc=curr_m.last_sync_utc if curr_m else "",
                             epoch=curr_epoch,
                             active_device=self.runner.config.device_id,
                             active_since_utc=datetime.now(timezone.utc).isoformat(),
                             antigravity_version=get_antigravity_version(self.runner.config.antigravity_bin_path),
                         )
-                        self.runner.drive.put_manifest(witness_manifest)
+                        if not cancel_witness.is_set():
+                            self.runner.drive.put_manifest(witness_manifest)
                     except Exception as err:
                         logger.debug(f"Could not claim active witness: {err}")
 
-                threading.Thread(target=claim_witness_async, daemon=True).start()
+                witness_thread = threading.Thread(target=claim_witness_worker, daemon=False)
+                witness_thread.start()
 
-                # 2. HIDE GUI ONLY AFTER ANTIGRAVITY IS ACTUALLY SPAWNED
+                # 3. LAUNCH APP AND HIDE GUI ONLY AFTER APP IS SPAWNED
+                self.root.after(0, lambda: self._set_progress(100, "Launching Antigravity..."))
                 def on_app_started() -> None:
                     self.root.after(0, self.root.withdraw)
 
-                # Wait for Antigravity to run and exit
                 self.runner.launch_app(on_launched=on_app_started)
 
-                # 3. RESTORE GUI TO SHOW PUSH PROGRESS
+                # 4. APP CLOSED: CANCEL PENDING WITNESS AND WAIT FOR IT
+                cancel_witness.set()
+                if witness_thread and witness_thread.is_alive():
+                    witness_thread.join(timeout=3)
+
+                # 5. RESTORE GUI TO SHOW PUSH PROGRESS
                 def show_push_status() -> None:
                     self.root.deiconify()
-                    self.lbl_status_bar.configure(text="Salvataggio e caricamento su Google Drive in corso...")
+                    self._set_progress(10, "Saving and uploading to Google Drive...")
 
                 self.root.after(0, show_push_status)
 
-                # 4. PUSH
-                push_ok = self.runner.push()
+                # 6. PUSH
+                push_ok = self.runner.push(progress_cb=update_progress)
 
                 if push_ok:
                     def close_success() -> None:
-                        self.lbl_status_bar.configure(text="Sincronizzazione completata! Chiusura...")
+                        self._set_progress(100, "Synchronization completed! Closing...")
                         self.root.after(800, self.root.destroy)
 
                     self.root.after(0, close_success)
                 else:
                     def show_warning() -> None:
                         self.root.deiconify()
+                        self._set_progress(0, "Upload postponed.")
                         messagebox.showwarning(
                             "GC-ChatSync",
-                            "Il caricamento su Drive è stato rimandato (Drive non raggiungibile o database occupato).\n"
-                            "I dati locali rimangono intatti e verranno caricati alla prossima sessione.",
+                            "Google Drive upload was postponed (Drive unreachable or database busy).\n"
+                            "Local data remains intact and will be uploaded in your next session.",
                         )
                         self._set_buttons_state(True)
                         self.refresh_status_async()
@@ -413,11 +498,12 @@ class ChatSyncGUI:
                     self.root.after(0, show_warning)
 
             except Exception as e:
-                logger.error(f"Errore nel ciclo di esecuzione: {e}", exc_info=True)
+                logger.error(f"Error during execution lifecycle: {e}", exc_info=True)
 
                 def show_err() -> None:
                     self.root.deiconify()
-                    messagebox.showerror("Errore GC-ChatSync", str(e))
+                    self._set_progress(0, f"Error: {e}")
+                    messagebox.showerror("GC-ChatSync Error", str(e))
                     self._set_buttons_state(True)
                     self.refresh_status_async()
 
@@ -433,7 +519,8 @@ class ChatSyncGUI:
             return
         self.is_running = True
         self._set_buttons_state(False)
-        self.lbl_status_bar.configure(text="Avvio diretto di Antigravity...")
+        self.lbl_status_bar.configure(text="Directly launching Antigravity...")
+        self._set_progress(50, "Directly launching Antigravity...")
 
         def bypass_worker() -> None:
             try:
@@ -443,11 +530,12 @@ class ChatSyncGUI:
                 self.runner.launch_app(on_launched=on_app_started)
                 self.root.after(0, self.root.destroy)
             except Exception as e:
-                logger.error(f"Errore avvio diretto: {e}", exc_info=True)
+                logger.error(f"Direct launch error: {e}", exc_info=True)
 
                 def show_err() -> None:
                     self.root.deiconify()
-                    messagebox.showerror("Errore Avvio", str(e))
+                    self._set_progress(0, f"Launch Error: {e}")
+                    messagebox.showerror("Launch Error", str(e))
                     self._set_buttons_state(True)
                     self.refresh_status_async()
 
@@ -459,20 +547,27 @@ class ChatSyncGUI:
 
     def on_pull_clicked(self) -> None:
         """Execute a manual pull with the force flag."""
-        self._run_in_background("Download da Google Drive in corso...",
-                                lambda: self.runner.pull(force=True),
-                                "Sincronizzazione da Google Drive completata!", "Errore Pull")
+        self._run_in_background(
+            "Downloading from Google Drive...",
+            lambda cb: self.runner.pull(force=True, progress_cb=cb),
+            "Synchronization from Google Drive completed!",
+            "Pull Error",
+        )
 
     def on_push_clicked(self) -> None:
         """Execute a manual push."""
-        self._run_in_background("Caricamento su Google Drive in corso...", self.runner.push,
-                                "Caricamento su Google Drive completato!", "Errore Push")
+        self._run_in_background(
+            "Uploading to Google Drive...",
+            lambda cb: self.runner.push(progress_cb=cb),
+            "Upload to Google Drive completed!",
+            "Push Error",
+        )
 
     def open_log_file(self) -> None:
         """Open the log file using the default system application."""
         log_path = get_log_file_path()
         if not log_path.is_file():
-            messagebox.showinfo("GC-ChatSync", "Nessun file di log trovato al momento.")
+            messagebox.showinfo("GC-ChatSync", "No log file found yet.")
             return
 
         sys_name = get_system_name()
@@ -484,14 +579,14 @@ class ChatSyncGUI:
             else:
                 subprocess.Popen(["xdg-open", str(log_path)])
         except OSError as e:
-            messagebox.showwarning("GC-ChatSync", f"Impossibile aprire il file di log: {e}")
+            messagebox.showwarning("GC-ChatSync", f"Could not open log file: {e}")
 
 
 def launch_gui() -> int:
     """Entrypoint to launch the Tkinter GUI."""
     if tk is None:
-        print("\n❌ Errore: Tkinter non è installato in questo ambiente Python.")
-        print("Su Linux esegui: sudo apt install python3-tk\n")
+        print("\n❌ Error: Tkinter is not installed in this Python environment.")
+        print("On Linux run: sudo apt install python3-tk\n")
         return 1
 
     root = tk.Tk()

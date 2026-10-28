@@ -92,6 +92,35 @@ def are_all_dbs_accessible(data_dir: Path, timeout: float = 0.5) -> bool:
     return True
 
 
+def snapshot_db(source_path: Path, target_path: Path) -> bool:
+    """Create a consistent, lock-free SQLite snapshot of source_path at target_path.
+    
+    Flushes WAL journals first and uses SQLite online backup API.
+    """
+    if not source_path.is_file():
+        return False
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if not checkpoint_db(source_path):
+        logger.warning(f"Could not checkpoint {source_path.name} before snapshot.")
+        return False
+    try:
+        s_conn = sqlite3.connect(source_path)
+        d_conn = sqlite3.connect(target_path)
+        try:
+            s_conn.backup(d_conn)
+        finally:
+            d_conn.close()
+            s_conn.close()
+        return True
+    except Exception as e:
+        logger.warning(f"SQLite online backup snapshot failed for {source_path}: {e}")
+        try:
+            shutil.copy2(source_path, target_path)
+            return True
+        except Exception:
+            return False
+
+
 def create_backup(db_path: Path, max_backups: int = 5) -> Optional[Path]:
     """Create a crash-safe timestamped backup of the database and prune old backups.
 
