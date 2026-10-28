@@ -114,6 +114,15 @@ class TestDriveClient(unittest.TestCase):
             client.pull_conversations(Path(tmp))
             client.pull_brain(Path(tmp))
 
+    def test_exclude_patterns_match_rclone_spec(self):
+        from gc_chatsync.drive import EXCLUDE_PATTERNS
+        self.assertIn("steps/**", EXCLUDE_PATTERNS)
+        self.assertIn("tasks/**", EXCLUDE_PATTERNS)
+        self.assertIn("messages/**", EXCLUDE_PATTERNS)
+        self.assertIn("chunks/**", EXCLUDE_PATTERNS)
+        for pat in EXCLUDE_PATTERNS:
+            self.assertFalse(pat.startswith("**/"))
+
 
 if __name__ == "__main__":
     unittest.main()

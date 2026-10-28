@@ -30,9 +30,13 @@ EXCLUDE_PATTERNS = [
     "presence/**",
     "log/**",
     ".backups/**",
-    "**/.system_generated/tasks/**",
-    "**/.system_generated/steps/**",
-    "**/.system_generated/messages/**",
+    "steps/**",
+    "tasks/**",
+    "messages/**",
+    "subagents/**",
+    "chunks/**",
+    ".tempmediaStorage/**",
+    "tempmediaStorage/**",
 ]
 
 
