@@ -33,7 +33,7 @@ Google Antigravity is an AI-first development environment, but currently lacks n
 Simply pointing general-purpose cloud storage clients (such as Google Drive for Desktop, OneDrive, or Dropbox) directly at the internal `~/.gemini/antigravity/` folder leads to serious issues:
 1. **SQLite WAL Locking & Corruption:** Antigravity runs SQLite databases in Write-Ahead Log (`WAL`) mode. Syncing raw database files while the application is active causes lock contention, desynchronized `-wal` files, and database corruption.
 2. **Conversation Overwrites:** The global conversation index (`conversation_summaries.db`) lists all sessions in the sidebar. A blind file overwrite from one PC silently wipes out sessions created on the other.
-3. **Cross-Platform Path Incompatibility:** Project workspaces referenced in conversations use platform-dependent URIs (`file:///home/claudio/...` vs `file:///C:/Users/...`). Blind syncing breaks workspace links in the Antigravity sidebar.
+3. **Cross-Platform Path Incompatibility:** Project workspaces referenced in conversations use platform-dependent URIs (`file:///home/user/...` vs `file:///C:/Users/...`). Blind syncing breaks workspace links in the Antigravity sidebar.
 4. **No Linux Desktop Client:** Google Drive does not provide an official desktop synchronization client for Linux.
 
 ---
