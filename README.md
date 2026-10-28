@@ -1,10 +1,14 @@
 # 🌌 GC-ChatSync (Google Cloud / Drive Chat Sync)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-brightgreen.svg)](#supported-platforms)
+[![Status](https://img.shields.io/badge/Status-Under%20Development-yellow.svg)](#roadmap)
+[![Platform](https://img.shields.io/badge/Target%20Platforms-Linux%20%7C%20Windows-brightgreen.svg)](#target-platforms)
 [![Storage](https://img.shields.io/badge/Storage-Google%20Drive-orange.svg)](#how-it-works)
 [![Built with AI](https://img.shields.io/badge/Built%20with-Google%20Antigravity%20AI-blueviolet.svg)](#about-the-project)
 [![Indie Dev](https://img.shields.io/badge/Dev-Independent-success.svg)](#about-the-project)
+
+> [!IMPORTANT]
+> 🚧 **Work in Progress:** This project is currently under active development. The architecture, modules, and commands described below are currently being implemented.
 
 > **Zero-bloat, cross-platform Google Drive synchronization for Google Antigravity AI chat histories, brain artifacts, and conversation indexes.**
 
@@ -84,13 +88,13 @@ Simply pointing general-purpose cloud storage clients (such as Google Drive for 
 
 ---
 
-## 🖥️ Supported Platforms
+## 🖥️ Target Platforms
 
 | Platform | Antigravity Flavor | Status |
 | :--- | :--- | :--- |
-| **Linux (Ubuntu, Debian, Fedora, Arch)** | Antigravity 2.0 Standalone / CLI | ✅ Supported |
-| **Windows 10 / 11** | Antigravity 2.0 Standalone / CLI | ✅ Supported |
-| **macOS** | Antigravity 2.0 / CLI | 🚧 Planned |
+| **Linux (Ubuntu, Debian, Fedora, Arch)** | Antigravity 2.0 Standalone / CLI | 🚧 In Development |
+| **Windows 10 / 11** | Antigravity 2.0 Standalone / CLI | 🚧 In Development |
+| **macOS** | Antigravity 2.0 / CLI | 📋 Planned |
 
 ---
 
@@ -108,16 +112,17 @@ Simply pointing general-purpose cloud storage clients (such as Google Drive for 
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Getting Started (Preview / In Development)
 
-### 1. Prerequisites
-- Python 3.10+
-- [`rclone`](https://rclone.org/) configured with your Google Drive remote (named `gdrive`):
+> *Note: Setup instructions below illustrate the target installation workflow currently being built.*
+
+### 1. Prerequisites (Setup your own Google Drive)
+Each user connects their own personal Google Drive via [`rclone`](https://rclone.org/):
 
 ```bash
 # On Linux (Ubuntu/Debian):
 sudo apt install rclone
-rclone config   # Follow interactive prompt: choose 'drive' and log in with your Google account
+rclone config   # Interactive guide: choose 'drive' and log in with your Google account
 
 # On Windows (PowerShell):
 winget install Rclone.Rclone
@@ -126,12 +131,12 @@ rclone config
 
 ### 2. Installation
 ```bash
-git clone https://github.com/<your-username>/gc-chatsync.git
-cd gc-chatsync
+git clone https://github.com/ClaudioAmen/GC-ChatSync.git
+cd GC-ChatSync
 pip install -e .
 ```
 
-### 3. Usage
+### 3. Usage (Target Interface)
 Launch Antigravity seamlessly through the `gc-chatsync` wrapper:
 
 ```bash
