@@ -106,6 +106,10 @@ class SyncRunner:
                 return False
 
             manifest = self.drive.get_manifest()
+            if manifest is None and not force:
+                logger.info("Cloud storage has no manifest (clean remote). Skipping pull.")
+                return True
+
             if manifest and manifest.last_device == self.config.device_id and not force:
                 logger.info(
                     f"Local device ({self.config.device_id}) is already the latest author in cloud "

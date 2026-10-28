@@ -273,10 +273,12 @@ class ChatSyncGUI:
 
             if status.session_dirty:
                 self.lbl_alignment.configure(text="⚠️ Push pendente da sessione precedente (premi Forza Push)", foreground=p.warning)
+            elif status.cloud_last_device is None:
+                self.lbl_alignment.configure(text="● Cloud vuoto (in attesa del primo push da una macchina)", foreground=p.fg_subtle)
             elif status.in_sync:
                 self.lbl_alignment.configure(text="● Allineato con il cloud", foreground=p.success)
             else:
-                self.lbl_alignment.configure(text="● Aggiornamenti disponibili nel cloud", foreground=p.warning)
+                self.lbl_alignment.configure(text=f"● Aggiornamenti disponibili da {status.cloud_last_device}", foreground=p.warning)
         else:
             self.lbl_drive_status.configure(text="● Non raggiungibile (verifica rclone)", foreground=p.error)
             self.lbl_cloud_last.configure(text="--")

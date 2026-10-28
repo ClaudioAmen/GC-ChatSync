@@ -98,7 +98,12 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"Cloud Revision:    Epoch {status.cloud_epoch}")
         if status.session_dirty:
             print("Pending Changes:   ⚠️ Previous session exited without pushing! Run: gc-chatsync push")
-        sync_icon = "🟢 Up to date" if status.in_sync else "🟡 Updates available in cloud"
+        if status.cloud_last_device is None:
+            sync_icon = "⚪ Cloud empty (initial push needed)"
+        elif status.in_sync:
+            sync_icon = "🟢 Up to date"
+        else:
+            sync_icon = f"🟡 Updates available from {status.cloud_last_device}"
         print(f"Sync Alignment:    {sync_icon}")
     print("=" * 55 + "\n")
     return 0

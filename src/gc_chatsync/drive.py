@@ -162,7 +162,7 @@ class DriveClient:
         remote_file = f"{self.remote_base}/conversation_summaries.db"
         local_staging_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            self.run_cmd(["copyto", remote_file, str(local_staging_path)], timeout=60)
+            self.run_cmd(["copyto", remote_file, str(local_staging_path)], timeout=60, log_errors=False)
             return local_staging_path.is_file()
         except RcloneError as e:
             logger.debug(f"Remote conversation_summaries.db not found or copy failed: {e}")
@@ -184,7 +184,7 @@ class DriveClient:
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
         try:
-            self.run_cmd(args, timeout=180)
+            self.run_cmd(args, timeout=180, log_errors=False)
         except RcloneError as e:
             if "directory not found" in str(e).lower():
                 logger.debug(f"Remote conversations folder not found on Drive (clean remote): {e}")
@@ -209,7 +209,7 @@ class DriveClient:
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
         try:
-            self.run_cmd(args, timeout=300)
+            self.run_cmd(args, timeout=300, log_errors=False)
         except RcloneError as e:
             if "directory not found" in str(e).lower():
                 logger.debug(f"Remote brain folder not found on Drive (clean remote): {e}")
@@ -232,7 +232,7 @@ class DriveClient:
         remote_dir = f"{self.remote_base}/projects"
         args = ["copy", remote_dir, str(local_projects_staging), "--update", "--transfers", "8", "--fast-list"]
         try:
-            self.run_cmd(args, timeout=120)
+            self.run_cmd(args, timeout=120, log_errors=False)
         except RcloneError as e:
             if "directory not found" in str(e).lower():
                 logger.debug(f"Remote projects folder not found on Drive (clean remote): {e}")
