@@ -72,7 +72,7 @@ class TestDriveClient(unittest.TestCase):
 
     @patch("shutil.which")
     @patch("subprocess.run")
-    def test_put_manifest_calls_rcat(self, mock_run, mock_which):
+    def test_put_manifest_calls_copyto(self, mock_run, mock_which):
         mock_which.return_value = "/usr/bin/rclone"
         mock_res = MagicMock()
         mock_res.returncode = 0
@@ -83,7 +83,7 @@ class TestDriveClient(unittest.TestCase):
         client.put_manifest(m)
 
         called_cmd = mock_run.call_args[0][0]
-        self.assertIn("rcat", called_cmd)
+        self.assertIn("copyto", called_cmd)
         self.assertIn("gdrive:GC-ChatSync/manifest.json", called_cmd)
 
     @patch("shutil.which")

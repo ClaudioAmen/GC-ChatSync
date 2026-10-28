@@ -10,6 +10,7 @@ import json
 import logging
 import shutil
 import subprocess
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,8 @@ EXCLUDE_PATTERNS = [
     "log/**",
     ".backups/**",
     "**/.system_generated/tasks/**",
+    "**/.system_generated/steps/**",
+    "**/.system_generated/messages/**",
 ]
 
 
@@ -153,9 +156,17 @@ class DriveClient:
     def put_manifest(self, manifest: SyncManifest) -> None:
         """Upload sync manifest to Google Drive."""
         remote_path = f"{self.remote_base}/manifest.json"
-        json_data = json.dumps(manifest.to_dict(), indent=2)
-        self.run_cmd(["rcat", remote_path], input_data=json_data, timeout=30)
-        logger.info(f"Updated remote manifest (last_device={manifest.last_device}, epoch={manifest.epoch})")
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".json") as f:
+            json.dump(manifest.to_dict(), f, indent=2)
+            tmp_path = Path(f.name)
+        try:
+            self.run_cmd(["copyto", str(tmp_path), remote_path], timeout=30)
+            logger.info(f"Updated remote manifest (last_device={manifest.last_device}, epoch={manifest.epoch})")
+        finally:
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
 
     def pull_summaries(self, local_staging_path: Path) -> bool:
         """Download remote conversation_summaries.db to local staging file."""
