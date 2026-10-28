@@ -12,6 +12,8 @@ GC-ChatSync is a cross-platform synchronization tool that keeps Google Antigravi
 
 Repository location: the current project workspace directory.
 
+**Safety Guideline:** Always ask my permission before running commands that install packages or modify system settings.
+
 Please perform the following onboarding workflow step-by-step:
 
 ---
@@ -19,7 +21,10 @@ Please perform the following onboarding workflow step-by-step:
 ### Step 1: Environment & Operating System Inspection
 1. Detect my operating system (`Linux` or `Windows`).
 2. Verify that Python 3.10+ is installed (`python3 --version` or `python --version`).
-3. Check if `rclone` is installed on PATH (`rclone version`):
+3. Check GUI support (Tkinter):
+   - Test with `python3 -m tkinter` (or `python -m tkinter`).
+   - If missing on Linux (Ubuntu/Debian), explain that Tkinter is required for the dashboard and ask permission to install via `sudo apt install -y python3-tk`.
+4. Check if `rclone` is installed on PATH (`rclone version`):
    - **On Linux (Ubuntu/Debian):** If missing, ask permission and offer to install via `sudo apt update && sudo apt install -y rclone`.
    - **On Linux (Arch/Fedora):** Offer `sudo pacman -S rclone` or `sudo dnf install rclone`.
    - **On Windows:** If missing, ask permission and offer to install via `winget install Rclone.Rclone` or `choco install rclone`.
@@ -28,14 +33,14 @@ Please perform the following onboarding workflow step-by-step:
 
 ### Step 2: Google Drive Authorization Verification
 1. Run `rclone listremotes` to check if a remote named `gdrive:` (or similar) already exists.
-2. If configured, test connectivity using `rclone lsf gdrive: --max-depth 1`.
+2. If configured, test connectivity using `rclone about gdrive:`.
 3. If not configured or unauthorized:
    - Guide me through running `rclone config`.
    - Instruct me to select:
      - `n` (New remote) -> name: `gdrive`
      - Storage type: `drive` (Google Drive)
      - Client ID & Secret: leave blank (press Enter)
-     - Scope: `1` (Full access: `drive`) or `2` (Read/write access to drive metadata and files: `drive.file`)
+     - Scope: `1` (Full access: `drive` - recommended so both Windows and Linux devices can see the shared `GC-ChatSync` folder without requiring a custom OAuth Client ID).
      - Root Folder ID & Service Account: leave blank (press Enter)
      - Advanced config: `n`
      - Auto config: `y` (opens browser to authenticate with Google Account)
@@ -44,8 +49,8 @@ Please perform the following onboarding workflow step-by-step:
 ---
 
 ### Step 3: Package Installation
-1. Install GC-ChatSync in editable user mode:
-   - Linux: `pip install --user --break-system-packages -e .` (or standard `pip install -e .` within a virtual environment).
+1. Install GC-ChatSync:
+   - Linux: `pipx install .` or `pip install --user --break-system-packages -e .` (or standard `pip install -e .` within a virtual environment).
    - Windows: `pip install -e .`
 2. Verify that `gc-chatsync --version` responds in the terminal.
 
@@ -68,6 +73,7 @@ Please perform the following onboarding workflow step-by-step:
    - Sync alignment status is reported.
 2. Inform me that the setup is complete and explain:
    - Clicking the Antigravity desktop icon will now open the GC-ChatSync dashboard with dark/light auto-theme.
-   - Clicking **"Avvia Antigravity"** will pull any new chats from Google Drive, launch Antigravity, and automatically push updates on close.
-   - I can run manual pulls and pushes at any time via `gc-chatsync pull` and `gc-chatsync push`.
+   - Clicking **"Sincronizza e Avvia Antigravity"** will pull any new chats from Google Drive, launch Antigravity, and automatically push updates on close.
+   - Clicking **"⚡ Bypassa Sync e Avvia normalmente"** launches Antigravity directly without running cloud pull or push.
+   - I can also launch directly from CLI using `gc-chatsync launch` or run manual synchronizations with `gc-chatsync pull` and `gc-chatsync push`.
 ```

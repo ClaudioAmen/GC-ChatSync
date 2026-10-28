@@ -6,8 +6,10 @@ import unittest
 from pathlib import Path
 
 from gc_chatsync.merger import (
+    DatabaseMergeError,
     checkpoint_db,
     create_backup,
+    is_db_exclusive_accessible,
     merge_summaries_databases,
 )
 
@@ -163,6 +165,30 @@ class TestDatabaseMerger(unittest.TestCase):
             self.assertEqual(row[1], "Chat from updated Antigravity")
         finally:
             conn.close()
+
+    def test_is_db_exclusive_accessible(self):
+        self._create_sample_db(self.local_db)
+        self.assertTrue(is_db_exclusive_accessible(self.local_db))
+
+        # While a lock is held, it should return False
+        conn = sqlite3.connect(self.local_db)
+        try:
+            conn.execute("BEGIN EXCLUSIVE;")
+            self.assertFalse(is_db_exclusive_accessible(self.local_db, timeout=0.1))
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.assertTrue(is_db_exclusive_accessible(self.local_db))
+
+    def test_schema_validation_fails_on_missing_required_column(self):
+        # Create DB missing last_modified_time
+        with sqlite3.connect(self.local_db) as conn:
+            conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT);")
+        self._create_sample_db(self.remote_db)
+
+        with self.assertRaises(DatabaseMergeError):
+            merge_summaries_databases(self.local_db, self.remote_db)
 
 
 if __name__ == "__main__":

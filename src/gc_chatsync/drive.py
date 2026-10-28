@@ -52,11 +52,14 @@ class DriveConnectionError(RcloneError):
 
 @dataclass
 class SyncManifest:
-    """Cloud state token tracking the latest synchronizing device and revision epoch."""
+    """Cloud state token tracking latest synchronizing device, revision epoch, and active witness."""
     last_device: str
     last_sync_utc: str
     epoch: int = 1
     version: int = 1
+    active_device: Optional[str] = None
+    active_since_utc: Optional[str] = None
+    antigravity_version: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -68,12 +71,29 @@ class SyncManifest:
             last_sync_utc=str(data.get("last_sync_utc", "")),
             epoch=int(data.get("epoch", 1)),
             version=int(data.get("version", 1)),
+            active_device=data.get("active_device"),
+            active_since_utc=data.get("active_since_utc"),
+            antigravity_version=data.get("antigravity_version"),
         )
 
     @classmethod
-    def create_now(cls, device_id: str, epoch: int = 1) -> SyncManifest:
+    def create_now(
+        cls,
+        device_id: str,
+        epoch: int = 1,
+        active_device: Optional[str] = None,
+        active_since_utc: Optional[str] = None,
+        antigravity_version: Optional[str] = None,
+    ) -> SyncManifest:
         now_utc = datetime.now(timezone.utc).isoformat()
-        return cls(last_device=device_id, last_sync_utc=now_utc, epoch=epoch)
+        return cls(
+            last_device=device_id,
+            last_sync_utc=now_utc,
+            epoch=epoch,
+            active_device=active_device,
+            active_since_utc=active_since_utc,
+            antigravity_version=antigravity_version,
+        )
 
 
 class DriveClient:

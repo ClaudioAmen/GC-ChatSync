@@ -96,6 +96,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"Cloud Last Sync:   {status.cloud_last_sync_utc or 'N/A'}")
         if status.cloud_epoch:
             print(f"Cloud Revision:    Epoch {status.cloud_epoch}")
+        if status.active_device:
+            print(f"Active Session:    ⚠️ Device '{status.active_device}' active since {status.active_since_utc}")
         if status.session_dirty:
             print("Pending Changes:   ⚠️ Previous session exited without pushing! Run: gc-chatsync push")
         if status.cloud_last_device is None:

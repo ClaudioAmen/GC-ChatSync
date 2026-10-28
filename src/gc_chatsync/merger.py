@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import shutil
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -32,25 +33,48 @@ class DatabaseMergeError(Exception):
     pass
 
 
-def checkpoint_db(db_path: Path) -> bool:
+def checkpoint_db(db_path: Path, max_retries: int = 3, retry_delay: float = 0.3) -> bool:
     """Flush WAL journal files into the main SQLite database with TRUNCATE.
     
+    Retries if the database returns busy status (e.g. read transaction in flight).
     Returns True if checkpoint succeeded fully, False if busy or errored.
     """
     if not db_path.is_file():
         return False
-    try:
-        conn = sqlite3.connect(db_path)
+    for attempt in range(max_retries):
         try:
-            res = conn.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchone()
-            if res and res[0] != 0:
-                logger.warning(f"WAL checkpoint for {db_path.name} was busy (status={res})")
-                return False
+            conn = sqlite3.connect(db_path, timeout=5.0)
+            try:
+                res = conn.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchone()
+                if res and res[0] != 0:
+                    logger.warning(
+                        f"WAL checkpoint for {db_path.name} was busy (attempt {attempt + 1}/{max_retries}, status={res})"
+                    )
+                    time.sleep(retry_delay)
+                    continue
+                return True
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            logger.warning(f"Could not checkpoint WAL for {db_path}: {e}")
+            time.sleep(retry_delay)
+    return False
+
+
+def is_db_exclusive_accessible(db_path: Path, timeout: float = 2.0) -> bool:
+    """Verify that no external process holds an active write lock on SQLite DB."""
+    if not db_path.is_file():
+        return True
+    try:
+        conn = sqlite3.connect(db_path, timeout=timeout)
+        try:
+            conn.execute("BEGIN EXCLUSIVE;")
+            conn.execute("COMMIT;")
             return True
         finally:
             conn.close()
-    except sqlite3.Error as e:
-        logger.warning(f"Could not checkpoint WAL for {db_path}: {e}")
+    except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+        logger.debug(f"Database {db_path.name} is currently locked by another process: {e}")
         return False
 
 
@@ -150,12 +174,17 @@ def merge_summaries_databases(local_db_path: Path, remote_db_path: Path) -> Merg
         # Attach remote staging database
         cur.execute("ATTACH DATABASE ? AS remote_db;", (str(remote_db_path.resolve()),))
 
-        # 3. Dynamic column discovery (schema buffer for future Antigravity versions)
+        # 3. Dynamic column discovery with strict base schema verification
         local_cols = set(get_table_columns(conn, "main", "conversation_summaries"))
         remote_cols = set(get_table_columns(conn, "remote_db", "conversation_summaries"))
 
-        if "conversation_id" not in local_cols or "conversation_id" not in remote_cols:
-            raise DatabaseMergeError("Both databases must contain 'conversation_id' in conversation_summaries.")
+        required_cols = {"conversation_id", "last_modified_time"}
+        missing_local = required_cols - local_cols
+        missing_remote = required_cols - remote_cols
+        if missing_local:
+            raise DatabaseMergeError(f"Local database schema missing required columns: {missing_local}")
+        if missing_remote:
+            raise DatabaseMergeError(f"Remote database schema missing required columns: {missing_remote}")
 
         # Common columns to merge
         common_cols = [c for c in get_table_columns(conn, "main", "conversation_summaries") if c in remote_cols]

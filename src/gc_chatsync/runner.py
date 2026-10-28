@@ -7,7 +7,9 @@ import logging
 import sqlite3
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -24,7 +26,7 @@ from gc_chatsync.lock import (
     is_session_dirty,
     mark_session_dirty,
 )
-from gc_chatsync.merger import checkpoint_db, merge_summaries_databases
+from gc_chatsync.merger import checkpoint_db, is_db_exclusive_accessible, merge_summaries_databases
 from gc_chatsync.project_mapper import (
     translate_project_json,
     translate_workspace_uris_string,
@@ -48,6 +50,8 @@ class SyncStatus:
     cloud_epoch: Optional[int] = None
     in_sync: bool = False
     session_dirty: bool = False
+    active_device: Optional[str] = None
+    active_since_utc: Optional[str] = None
 
 
 class SyncRunner:
@@ -69,6 +73,8 @@ class SyncRunner:
         cloud_last_utc = None
         cloud_epoch = None
         in_sync = False
+        active_dev = None
+        active_since = None
 
         if connected:
             manifest = self.drive.get_manifest()
@@ -77,6 +83,8 @@ class SyncRunner:
                 cloud_last_utc = manifest.last_sync_utc
                 cloud_epoch = manifest.epoch
                 in_sync = (cloud_last_dev == self.config.device_id)
+                active_dev = manifest.active_device
+                active_since = manifest.active_since_utc
 
         return SyncStatus(
             device_id=self.config.device_id,
@@ -91,6 +99,8 @@ class SyncRunner:
             cloud_epoch=cloud_epoch,
             in_sync=in_sync,
             session_dirty=is_session_dirty(),
+            active_device=active_dev,
+            active_since_utc=active_since,
         )
 
     def pull(self, force: bool = False) -> bool:
@@ -228,10 +238,15 @@ class SyncRunner:
                 logger.info("Uploading conversation_summaries.db...")
                 self.drive.push_summaries(local_db)
 
-            # 5. Update cloud manifest token with incremented epoch
+            # 5. Update cloud manifest token with incremented epoch and release active witness
             existing_manifest = self.drive.get_manifest()
             next_epoch = (existing_manifest.epoch + 1) if existing_manifest else 1
-            new_manifest = SyncManifest.create_now(self.config.device_id, epoch=next_epoch)
+            new_manifest = SyncManifest.create_now(
+                self.config.device_id,
+                epoch=next_epoch,
+                active_device=None,
+                active_since_utc=None,
+            )
             self.drive.put_manifest(new_manifest)
 
             # 6. Clear dirty state flag
@@ -261,6 +276,14 @@ class SyncRunner:
         try:
             proc = subprocess.Popen(cmd)
             proc.wait()
+
+            # Wait up to 5s if child background processes still hold exclusive lock on DB
+            local_db = self.data_dir / "conversation_summaries.db"
+            for _ in range(10):
+                if is_db_exclusive_accessible(local_db, timeout=0.5):
+                    break
+                time.sleep(0.5)
+
             logger.info("Antigravity closed gracefully.")
             return proc.returncode
         except Exception as e:
@@ -270,14 +293,47 @@ class SyncRunner:
     def run(self, extra_args: Optional[list[str]] = None) -> int:
         """Full lifecycle: PULL -> LAUNCH -> PUSH with concurrency locking and dirty session recovery."""
         with ProcessLock():
-            # If an earlier run crashed before pushing, notify and push residual changes
+            # If an earlier run crashed before pushing, recover safely (Pull+Merge if cloud advanced, then Push)
             if is_session_dirty():
-                logger.warning("Unclean exit detected from previous session. Pushing residual changes first...")
-                print("⚠️ [GC-ChatSync] Unfinished sync detected from previous session. Pushing residual changes first...")
+                logger.warning("Unclean exit detected from previous session. Recovering...")
+                print("⚠️ [GC-ChatSync] Unfinished sync detected from previous session. Recovering...")
+                manifest = self.drive.get_manifest()
+                if manifest and manifest.last_device != self.config.device_id:
+                    logger.warning(
+                        f"Cloud has newer changes from '{manifest.last_device}' (epoch {manifest.epoch}). "
+                        "Merging cloud updates with local changes first..."
+                    )
+                    print(f"🔄 Merging cloud updates from '{manifest.last_device}' with local changes first...")
+                    self.pull(force=True)
                 self.push()
 
             print("🌌 [GC-ChatSync] Step 1/3: Checking & Pulling from Google Drive...")
             self.pull()
+
+            # Check if another device has an unclosed active session
+            manifest = self.drive.get_manifest()
+            if manifest and manifest.active_device and manifest.active_device != self.config.device_id:
+                logger.warning(
+                    f"Notice: Device '{manifest.active_device}' was marked active since {manifest.active_since_utc}. "
+                    "It may not have closed cleanly."
+                )
+                print(f"⚠️ [GC-ChatSync] Device '{manifest.active_device}' was active since {manifest.active_since_utc}.")
+                print("   If it exited abruptly without pushing, latest changes from that device might not be on Drive.")
+
+            # Claim active witness in cloud
+            try:
+                curr_epoch = manifest.epoch if manifest else 1
+                curr_last = manifest.last_device if manifest else self.config.device_id
+                witness_manifest = SyncManifest(
+                    last_device=curr_last,
+                    last_sync_utc=manifest.last_sync_utc if manifest else "",
+                    epoch=curr_epoch,
+                    active_device=self.config.device_id,
+                    active_since_utc=datetime.now(timezone.utc).isoformat(),
+                )
+                self.drive.put_manifest(witness_manifest)
+            except Exception as e:
+                logger.debug(f"Could not claim active witness: {e}")
 
             # Mark session dirty before launching the editor
             mark_session_dirty(self.config.device_id)

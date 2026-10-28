@@ -24,6 +24,12 @@
 > 🚀 **Author Note:** This is an open-source project created by an independent developer in continuous pair-programming collaboration with **Google Antigravity AI**.
 > Built out of an everyday need to keep a desktop workstation (Windows) and a laptop (Linux) fully synchronized, this project is shared with the community as a modular, lightweight, and robust solution. Feedback, issues, and contributions are super welcome!
 
+### 🎯 Design Assumptions
+GC-ChatSync is designed under the assumption of **a single user working on one device at a time** in an alternating pattern:
+- You work on Machine A (e.g., Windows Desktop) $\rightarrow$ Antigravity closes $\rightarrow$ Changes are pushed to Google Drive.
+- You switch to Machine B (e.g., Linux Laptop) $\rightarrow$ Antigravity launches $\rightarrow$ Changes are pulled and merged from Google Drive.
+- Simultaneous concurrent editing of the exact same chat session on two PCs at the same moment is not supported.
+
 ---
 
 ## 💡 The Problem
@@ -132,7 +138,7 @@ Each user connects their personal Google Drive via [`rclone`](https://rclone.org
 
 ```bash
 # On Linux (Ubuntu/Debian):
-sudo apt install rclone
+sudo apt update && sudo apt install -y rclone python3-tk
 rclone config   # Choose 'drive' and log in with your Google account
 
 # On Windows (PowerShell):
@@ -141,6 +147,9 @@ rclone config
 ```
 
 > [!TIP]
+> **Google Drive Scope Note:**
+> In `rclone config`, Scope `1` (Full access: `drive`) is recommended for zero-config sharing between devices. If you select Scope `2` (`drive.file`), ensure you configure the same custom OAuth `client_id` on both machines so they can see the same app directory.
+> 
 > **Want Zero-Knowledge Encryption?**
 > You can easily wrap your `gdrive:` remote with an [`rclone crypt`](https://rclone.org/crypt/) remote (e.g. `gdrive-crypt:`). In GC-ChatSync setup, simply specify `gdrive-crypt` as your remote name. All chat files will be encrypted locally with AES-256 before being uploaded to Google Drive!
 
@@ -149,8 +158,8 @@ rclone config
 git clone https://github.com/ClaudioAmen/GC-ChatSync.git
 cd GC-ChatSync
 
-# Linux:
-pip install --user --break-system-packages -e .
+# Linux (recommended: pipx or user install):
+pip install --user --break-system-packages -e .   # or: pipx install .
 
 # Windows:
 pip install -e .
@@ -161,6 +170,9 @@ pip install -e .
 ```bash
 # Launch Graphical Dashboard (Auto Dark/Light Theme)
 gc-chatsync gui    # or just: gc-chatsync
+
+# Directly launch Antigravity without cloud sync (Bypass)
+gc-chatsync launch # or: gc-chatsync run --no-sync
 
 # Check system status, Google Drive ping, and cloud alignment
 gc-chatsync status
@@ -196,6 +208,10 @@ gc-chatsync setup
 ## ⚠️ Known Limitations & Troubleshooting
 
 - **First Run on Second PC:** When launching GC-ChatSync on your second PC for the first time, use `gc-chatsync pull -f` (or click **"Riprova / Pull"** in the GUI) to pull the initial history from Drive.
+- **Non-Destructive Deletions:** Because GC-ChatSync uses `copy --update` to safeguard your chat history, a conversation database deleted on one PC is not deleted from Google Drive.
+- **Active Witness Tracking:** The cloud manifest tracks active sessions (`active_device`). If a machine powers off unexpectedly, the other machine warns you and performs a safety merge before pushing.
+- **Schema Safety:** GC-ChatSync verifies base SQLite schema columns (`conversation_id`, `last_modified_time`) and dynamically maps columns to protect your database if Antigravity versions differ between machines.
+- **Shortcut Re-patching:** An official Antigravity application update may overwrite the desktop `.desktop` file or shortcut; simply run `gc-chatsync install-shortcut` to re-hook GC-ChatSync.
 - **Log Files:** Persistent session logs are written to `~/.config/gc-chatsync/logs/sync.log` (`%APPDATA%\gc-chatsync\logs\sync.log` on Windows) with automatic 5MB rotation.
 - **Active Lock:** If you see `Another GC-ChatSync instance is already running`, an active process is currently holding the sync lock. If a process was terminated abruptly, stale locks are automatically recovered on the subsequent run.
 

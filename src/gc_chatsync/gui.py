@@ -271,7 +271,10 @@ class ChatSyncGUI:
             else:
                 self.lbl_cloud_last.configure(text="Nessuna sincronizzazione precedente")
 
-            if status.session_dirty:
+            if status.active_device and status.active_device != self.runner.config.device_id:
+                when_active = (status.active_since_utc or "")[:16].replace("T", " ")
+                self.lbl_alignment.configure(text=f"⚠️ {status.active_device} attivo dal {when_active} UTC (sessione precedente)", foreground=p.warning)
+            elif status.session_dirty:
                 self.lbl_alignment.configure(text="⚠️ Push pendente da sessione precedente (premi Forza Push)", foreground=p.warning)
             elif status.cloud_last_device is None:
                 self.lbl_alignment.configure(text="● Cloud vuoto (in attesa del primo push da una macchina)", foreground=p.fg_subtle)

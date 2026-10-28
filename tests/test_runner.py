@@ -85,6 +85,48 @@ class TestSyncRunner(unittest.TestCase):
             # On Linux, this should be translated to /home/...
             self.assertIn("/home/", row[0])
 
+    @patch("gc_chatsync.runner.is_session_dirty")
+    @patch("gc_chatsync.drive.DriveClient.get_manifest")
+    @patch("gc_chatsync.runner.SyncRunner.pull")
+    @patch("gc_chatsync.runner.SyncRunner.push")
+    @patch("gc_chatsync.runner.SyncRunner.launch_app")
+    def test_run_recovers_dirty_session_with_pull_when_cloud_ahead(
+        self, mock_launch, mock_push, mock_pull, mock_manifest, mock_dirty
+    ):
+        mock_dirty.return_value = True
+        mock_manifest.return_value = SyncManifest(
+            last_device="other-windows-pc",
+            last_sync_utc="2026-10-28T18:00:00Z",
+            epoch=5,
+        )
+        mock_launch.return_value = 0
+
+        runner = SyncRunner(self.cfg)
+        runner.run()
+
+        # pull(force=True) should have been called during dirty recovery
+        mock_pull.assert_any_call(force=True)
+        # push should have been called
+        self.assertTrue(mock_push.called)
+
+    @patch("gc_chatsync.drive.DriveClient.test_connection")
+    @patch("gc_chatsync.drive.DriveClient.get_manifest")
+    def test_get_status_reports_active_device(self, mock_manifest, mock_conn):
+        mock_conn.return_value = True
+        mock_manifest.return_value = SyncManifest(
+            last_device="test-laptop",
+            last_sync_utc="2026-10-28T16:00:00Z",
+            epoch=2,
+            active_device="windows-desktop",
+            active_since_utc="2026-10-28T18:30:00Z",
+        )
+
+        runner = SyncRunner(self.cfg)
+        status = runner.get_status()
+
+        self.assertEqual(status.active_device, "windows-desktop")
+        self.assertEqual(status.active_since_utc, "2026-10-28T18:30:00Z")
+
 
 if __name__ == "__main__":
     unittest.main()
