@@ -79,6 +79,17 @@ def get_default_antigravity_data_dir() -> Path:
     return home / ".gemini" / "antigravity"
 
 
+def get_default_antigravity_projects_dir() -> Path:
+    """Return default Antigravity projects directory (~/.gemini/config/projects)."""
+    sys_name = get_system_name()
+    if sys_name == "windows":
+        userprofile = os.environ.get("USERPROFILE")
+        home = Path(userprofile) if userprofile else Path.home()
+    else:
+        home = Path.home()
+    return home / ".gemini" / "config" / "projects"
+
+
 def find_antigravity_executable() -> Optional[Path]:
     """Search for the Antigravity executable across common OS locations."""
     sys_name = get_system_name()

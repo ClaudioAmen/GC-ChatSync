@@ -37,8 +37,11 @@ def checkpoint_db(db_path: Path) -> None:
     if not db_path.is_file():
         return
     try:
-        with sqlite3.connect(db_path) as conn:
+        conn = sqlite3.connect(db_path)
+        try:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        finally:
+            conn.close()
     except sqlite3.Error as e:
         logger.warning(f"Could not checkpoint WAL for {db_path}: {e}")
 

@@ -92,7 +92,13 @@ class DriveClient:
         """Full remote path (e.g. 'gdrive:GC-ChatSync')."""
         return f"{self.remote_name}:{self.remote_folder}"
 
-    def run_cmd(self, args: List[str], timeout: int = 60, input_data: Optional[str] = None) -> str:
+    def run_cmd(
+        self,
+        args: List[str],
+        timeout: int = 60,
+        input_data: Optional[str] = None,
+        log_errors: bool = True,
+    ) -> str:
         """Run an rclone command and return its standard output."""
         cmd = [self._rclone_bin] + args
         logger.debug(f"Executing: {' '.join(cmd)}")
@@ -107,16 +113,17 @@ class DriveClient:
             )
             if res.returncode != 0:
                 err_msg = res.stderr.strip() or f"rclone exited with code {res.returncode}"
-                logger.error(f"Command failed ({cmd}): {err_msg}")
+                if log_errors:
+                    logger.error(f"Command failed ({cmd}): {err_msg}")
                 raise RcloneError(err_msg)
             return res.stdout
         except subprocess.TimeoutExpired as e:
             raise RcloneError(f"rclone command timed out after {timeout} seconds: {e}") from e
 
     def test_connection(self) -> bool:
-        """Check if remote is accessible and authorized."""
+        """Check if remote is accessible and authorized (fast directory ping)."""
         try:
-            self.run_cmd(["about", f"{self.remote_name}:"], timeout=15)
+            self.run_cmd(["lsf", f"{self.remote_name}:", "--max-depth", "1"], timeout=15, log_errors=False)
             return True
         except Exception as e:
             logger.warning(f"Google Drive connection test failed: {e}")
@@ -126,7 +133,7 @@ class DriveClient:
         """Fetch cloud manifest if it exists."""
         remote_path = f"{self.remote_base}/manifest.json"
         try:
-            output = self.run_cmd(["cat", remote_path], timeout=15)
+            output = self.run_cmd(["cat", remote_path], timeout=15, log_errors=False)
             data = json.loads(output)
             return SyncManifest.from_dict(data)
         except RcloneError:
@@ -199,3 +206,18 @@ class DriveClient:
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
         self.run_cmd(args, timeout=120)
+
+    def pull_projects(self, local_projects_staging: Path) -> None:
+        """Download remote project definitions into a staging directory for translation."""
+        local_projects_staging.mkdir(parents=True, exist_ok=True)
+        remote_dir = f"{self.remote_base}/projects"
+        args = ["copy", remote_dir, str(local_projects_staging), "--update"]
+        self.run_cmd(args, timeout=60)
+
+    def push_projects(self, local_projects_dir: Path) -> None:
+        """Upload local project definitions to Google Drive."""
+        if not local_projects_dir.is_dir():
+            return
+        remote_dir = f"{self.remote_base}/projects"
+        args = ["copy", str(local_projects_dir), remote_dir, "--update"]
+        self.run_cmd(args, timeout=60)

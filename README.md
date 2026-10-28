@@ -1,14 +1,11 @@
 # 🌌 GC-ChatSync (Google Cloud / Drive Chat Sync)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Under%20Development-yellow.svg)](#roadmap)
-[![Platform](https://img.shields.io/badge/Target%20Platforms-Linux%20%7C%20Windows-brightgreen.svg)](#target-platforms)
+[![Version](https://img.shields.io/badge/Version-0.1.0-brightgreen.svg)](#features)
+[![Platform](https://img.shields.io/badge/Platforms-Linux%20%7C%20Windows-blue.svg)](#supported-platforms)
 [![Storage](https://img.shields.io/badge/Storage-Google%20Drive-orange.svg)](#how-it-works)
 [![Built with AI](https://img.shields.io/badge/Built%20with-Google%20Antigravity%20AI-blueviolet.svg)](#about-the-project)
 [![Indie Dev](https://img.shields.io/badge/Dev-Independent-success.svg)](#about-the-project)
-
-> [!IMPORTANT]
-> 🚧 **Work in Progress:** This project is currently under active development. The architecture, modules, and commands described below are currently being implemented.
 
 > **Zero-bloat, cross-platform Google Drive synchronization for Google Antigravity AI chat histories, brain artifacts, and conversation indexes.**
 
@@ -88,12 +85,12 @@ Simply pointing general-purpose cloud storage clients (such as Google Drive for 
 
 ---
 
-## 🖥️ Target Platforms
+## 🖥️ Supported Platforms
 
 | Platform | Antigravity Flavor | Status |
 | :--- | :--- | :--- |
-| **Linux (Ubuntu, Debian, Fedora, Arch)** | Antigravity 2.0 Standalone / CLI | 🚧 In Development |
-| **Windows 10 / 11** | Antigravity 2.0 Standalone / CLI | 🚧 In Development |
+| **Linux (Ubuntu, Debian, Fedora, Arch)** | Antigravity 2.0 Standalone / CLI | ✅ Supported (v0.1.0) |
+| **Windows 10 / 11** | Antigravity 2.0 Standalone / CLI | ✅ Supported (v0.1.0) |
 | **macOS** | Antigravity 2.0 / CLI | 📋 Planned |
 
 ---
@@ -101,22 +98,22 @@ Simply pointing general-purpose cloud storage clients (such as Google Drive for 
 ## 📂 Synchronized Antigravity Data
 
 ```
-~/.gemini/antigravity/
-├── conversations/            --> Synced (Each chat session .db with unique UUID)
-├── brain/                    --> Synced (Transcripts, scratchpads, generated artifacts)
-├── conversation_summaries.db --> Merged via SQL (Sidebar conversation list)
-└── sync_state.json           --> Cloud state manifest
+Google Drive/
+└── GC-ChatSync/
+    ├── manifest.json              --> Cloud state token tracking latest active device
+    ├── conversation_summaries.db  --> Unified conversation index merged via SQL
+    ├── conversations/             --> Individual chat session databases (<uuid>.db)
+    ├── brain/                     --> Session logs, scratchpads, generated artifacts
+    └── projects/                  --> Cross-platform translated project definitions
 ```
 
 *Automatically excluded:* `crashes/`, `presence/`, `cache/`, `installation_id`, `*.db-wal`, `*.db-shm`.
 
 ---
 
-## 🚀 Getting Started (Preview / In Development)
+## 🚀 Getting Started
 
-> *Note: Setup instructions below illustrate the target installation workflow currently being built.*
-
-### 1. Prerequisites (Setup your own Google Drive)
+### 1. Prerequisites (Connect your Google Drive)
 Each user connects their own personal Google Drive via [`rclone`](https://rclone.org/):
 
 ```bash
@@ -136,15 +133,21 @@ cd GC-ChatSync
 pip install -e .
 ```
 
-### 3. Usage (Target Interface)
-Launch Antigravity seamlessly through the `gc-chatsync` wrapper:
+### 3. Usage & Commands
 
 ```bash
-# On Linux:
+# Check status and alignment with Google Drive
+gc-chatsync status
+
+# Run the complete wrapper (PULL -> Run Antigravity -> PUSH on close)
 gc-chatsync run
 
-# On Windows:
-gc-chatsync.exe run
+# Manual one-off pull or push
+gc-chatsync pull
+gc-chatsync push
+
+# Interactive setup wizard
+gc-chatsync setup
 ```
 
 ---
@@ -153,16 +156,16 @@ gc-chatsync.exe run
 
 - [x] Initial architecture & safe SQLite merge strategy
 - [x] Repository initialization & open-source documentation
-- [ ] Core Python package (`gc_chatsync`):
-  - [ ] Cross-platform environment detection (`Linux` vs `Windows`)
-  - [ ] SQLite two-way index merge engine
-  - [ ] Cloud state lock & manifest validation
-  - [ ] Integrated rclone runner
-- [ ] Desktop launch helpers:
-  - [ ] Linux `.desktop` desktop entry
-  - [ ] Windows `.bat` / shortcut launcher
+- [x] Core Python package (`gc_chatsync`):
+  - [x] Cross-platform environment detection (`Linux` vs `Windows`)
+  - [x] SQLite two-way index merge engine (`ATTACH DATABASE`)
+  - [x] Cloud state lock & manifest validation (`manifest.json`)
+  - [x] Integrated rclone runner
+  - [x] Cross-platform workspace path translation (`C:\...` $\leftrightarrow$ `/home/...`)
+- [x] Desktop launch helpers:
+  - [x] Linux launch script & `.desktop` launcher
+  - [x] Windows `.bat` launcher
 - [ ] Optional end-to-end encryption (`AES-256`) before cloud upload
-- [ ] Cross-platform workspace path translation (`C:\...` $\leftrightarrow$ `/home/...`)
 
 ---
 

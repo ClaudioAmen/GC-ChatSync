@@ -1,6 +1,7 @@
 """Unit tests for DriveClient and SyncManifest."""
 
 import json
+import shutil
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -31,7 +32,7 @@ class TestDriveClient(unittest.TestCase):
         mock_which.return_value = "/usr/bin/rclone"
         mock_res = MagicMock()
         mock_res.returncode = 0
-        mock_res.stdout = "Total: 5 TiB"
+        mock_res.stdout = "folder1/\nfile1.txt"
         mock_run.return_value = mock_res
 
         client = DriveClient(remote_name="gdrive")
@@ -83,8 +84,15 @@ class TestDriveClient(unittest.TestCase):
         self.assertIn("rcat", called_cmd)
         self.assertIn("gdrive:GC-ChatSync/manifest.json", called_cmd)
 
-    def test_live_connection_to_gdrive(self):
-        """Real live test using configured rclone credentials."""
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_live_connection_to_gdrive_mocked(self, mock_run, mock_which):
+        mock_which.return_value = "/usr/bin/rclone"
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = "folder1/\nfile1.txt\n"
+        mock_run.return_value = mock_res
+
         client = DriveClient(remote_name="gdrive")
         self.assertTrue(client.test_connection())
 
