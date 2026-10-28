@@ -1,0 +1,201 @@
+"""Google Drive operations wrapper using rclone.
+
+Handles manifest operations, directory syncing, and remote staging for
+GC-ChatSync.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import shutil
+import subprocess
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("gc_chatsync.drive")
+
+# Standard file exclusion patterns for Antigravity data
+EXCLUDE_PATTERNS = [
+    "*.db-wal",
+    "*.db-shm",
+    "installation_id",
+    "antigravity_state.pbtxt",
+    "cache/**",
+    "crashes/**",
+    "presence/**",
+    "log/**",
+    ".backups/**",
+]
+
+
+class RcloneError(Exception):
+    """Base exception for rclone operations."""
+    pass
+
+
+class RcloneNotFoundError(RcloneError):
+    """Raised when rclone executable is not found on PATH."""
+    pass
+
+
+class DriveConnectionError(RcloneError):
+    """Raised when connection to Google Drive fails."""
+    pass
+
+
+@dataclass
+class SyncManifest:
+    """Cloud state token tracking the latest synchronizing device."""
+    last_device: str
+    last_sync_utc: str
+    version: int = 1
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> SyncManifest:
+        return cls(
+            last_device=str(data.get("last_device", "unknown")),
+            last_sync_utc=str(data.get("last_sync_utc", "")),
+            version=int(data.get("version", 1)),
+        )
+
+    @classmethod
+    def create_now(cls, device_id: str) -> SyncManifest:
+        now_utc = datetime.now(timezone.utc).isoformat()
+        return cls(last_device=device_id, last_sync_utc=now_utc)
+
+
+class DriveClient:
+    """Executes rclone commands to interact with Google Drive."""
+
+    def __init__(self, remote_name: str = "gdrive", remote_folder: str = "GC-ChatSync"):
+        self.remote_name = remote_name
+        self.remote_folder = remote_folder.strip("/")
+        self._rclone_bin = self._find_rclone()
+
+    @staticmethod
+    def _find_rclone() -> str:
+        bin_path = shutil.which("rclone")
+        if not bin_path:
+            raise RcloneNotFoundError(
+                "rclone binary not found. Please install rclone (https://rclone.org)."
+            )
+        return bin_path
+
+    @property
+    def remote_base(self) -> str:
+        """Full remote path (e.g. 'gdrive:GC-ChatSync')."""
+        return f"{self.remote_name}:{self.remote_folder}"
+
+    def run_cmd(self, args: List[str], timeout: int = 60, input_data: Optional[str] = None) -> str:
+        """Run an rclone command and return its standard output."""
+        cmd = [self._rclone_bin] + args
+        logger.debug(f"Executing: {' '.join(cmd)}")
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                input=input_data,
+                timeout=timeout,
+                check=False,
+            )
+            if res.returncode != 0:
+                err_msg = res.stderr.strip() or f"rclone exited with code {res.returncode}"
+                logger.error(f"Command failed ({cmd}): {err_msg}")
+                raise RcloneError(err_msg)
+            return res.stdout
+        except subprocess.TimeoutExpired as e:
+            raise RcloneError(f"rclone command timed out after {timeout} seconds: {e}") from e
+
+    def test_connection(self) -> bool:
+        """Check if remote is accessible and authorized."""
+        try:
+            self.run_cmd(["about", f"{self.remote_name}:"], timeout=15)
+            return True
+        except Exception as e:
+            logger.warning(f"Google Drive connection test failed: {e}")
+            return False
+
+    def get_manifest(self) -> Optional[SyncManifest]:
+        """Fetch cloud manifest if it exists."""
+        remote_path = f"{self.remote_base}/manifest.json"
+        try:
+            output = self.run_cmd(["cat", remote_path], timeout=15)
+            data = json.loads(output)
+            return SyncManifest.from_dict(data)
+        except RcloneError:
+            # File might not exist yet on cloud (first sync)
+            return None
+        except json.JSONDecodeError as e:
+            logger.warning(f"Corrupted remote manifest.json: {e}")
+            return None
+
+    def put_manifest(self, manifest: SyncManifest) -> None:
+        """Upload sync manifest to Google Drive."""
+        remote_path = f"{self.remote_base}/manifest.json"
+        json_data = json.dumps(manifest.to_dict(), indent=2)
+        self.run_cmd(["rcat", remote_path], input_data=json_data, timeout=30)
+        logger.info(f"Updated remote manifest (last_device={manifest.last_device})")
+
+    def pull_summaries(self, local_staging_path: Path) -> bool:
+        """Download remote conversation_summaries.db to local staging file."""
+        remote_file = f"{self.remote_base}/conversation_summaries.db"
+        local_staging_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.run_cmd(["copyto", remote_file, str(local_staging_path)], timeout=60)
+            return local_staging_path.is_file()
+        except RcloneError as e:
+            logger.debug(f"Remote conversation_summaries.db not found or copy failed: {e}")
+            return False
+
+    def push_summaries(self, local_db_path: Path) -> None:
+        """Upload merged local conversation_summaries.db to Google Drive."""
+        if not local_db_path.is_file():
+            raise FileNotFoundError(f"Local database not found: {local_db_path}")
+        remote_file = f"{self.remote_base}/conversation_summaries.db"
+        self.run_cmd(["copyto", str(local_db_path), remote_file], timeout=60)
+        logger.info("Uploaded conversation_summaries.db to Google Drive")
+
+    def pull_conversations(self, local_conversations_dir: Path) -> None:
+        """Download new/updated conversation session databases from remote."""
+        local_conversations_dir.mkdir(parents=True, exist_ok=True)
+        remote_dir = f"{self.remote_base}/conversations"
+        args = ["copy", remote_dir, str(local_conversations_dir), "--update"]
+        for pat in EXCLUDE_PATTERNS:
+            args.extend(["--exclude", pat])
+        self.run_cmd(args, timeout=120)
+
+    def push_conversations(self, local_conversations_dir: Path) -> None:
+        """Upload new/updated conversation session databases to remote."""
+        if not local_conversations_dir.is_dir():
+            return
+        remote_dir = f"{self.remote_base}/conversations"
+        args = ["copy", str(local_conversations_dir), remote_dir, "--update"]
+        for pat in EXCLUDE_PATTERNS:
+            args.extend(["--exclude", pat])
+        self.run_cmd(args, timeout=120)
+
+    def pull_brain(self, local_brain_dir: Path) -> None:
+        """Download new/updated brain artifacts and transcripts from remote."""
+        local_brain_dir.mkdir(parents=True, exist_ok=True)
+        remote_dir = f"{self.remote_base}/brain"
+        args = ["copy", remote_dir, str(local_brain_dir), "--update"]
+        for pat in EXCLUDE_PATTERNS:
+            args.extend(["--exclude", pat])
+        self.run_cmd(args, timeout=120)
+
+    def push_brain(self, local_brain_dir: Path) -> None:
+        """Upload new/updated brain artifacts and transcripts to remote."""
+        if not local_brain_dir.is_dir():
+            return
+        remote_dir = f"{self.remote_base}/brain"
+        args = ["copy", str(local_brain_dir), remote_dir, "--update"]
+        for pat in EXCLUDE_PATTERNS:
+            args.extend(["--exclude", pat])
+        self.run_cmd(args, timeout=120)

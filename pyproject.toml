@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gc-chatsync"
+version = "0.1.0"
+description = "Automated Google Drive synchronization for Google Antigravity AI chat histories and sessions"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "ClaudioAmen" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+]
+dependencies = []
+
+[project.scripts]
+gc-chatsync = "gc_chatsync.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
