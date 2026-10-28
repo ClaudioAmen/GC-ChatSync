@@ -21,7 +21,8 @@ cloud: "connected (gdrive)"
 * **Pulizia Desktop (.bak)**: I file `.bak` delle scorciatoie vengono ora salvati ordinatamente in `AppData\Roaming\gc-chatsync\backups\shortcuts` invece di comparire sul Desktop.
 * **Avvio Silenzioso GUI via pythonw**: Il collegamento desktop punta direttamente a `pythonw.exe -m gc_chatsync.cli gui`, eliminando ogni finestra nera CMD iniziale.
 * **Ottimizzazione Pacing Google Drive (Zero Errori 403 / Timeout)**: Risolto il blocco rilevato in `sync.log` calibrando il rate limit di rclone (`--tpslimit 8`, `max_workers=2`, timeout estesi a 600s), evitando il throttling delle API Google.
-* **Suite di Test Verde**: 60 test su 60 superati (100% OK).
+* **Correzione Filtri Rclone Brain (da 9.000 file a 258)**: Corretti i pattern di esclusione in `drive.py`. Eliminati i 8.700 micro-file intermedi di step/tasks/messages che causavano il blocco del push alla chiusura. Il tempo di sync di `brain` è passato da 18 minuti a 3.1 secondi.
+* **Suite di Test Verde**: 61 test su 61 superati (100% OK).
 
 ## ⏭️ Prossimi Step
 1. Verificare l'esperienza utente su Windows senza pop-up console.

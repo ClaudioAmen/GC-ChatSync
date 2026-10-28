@@ -8,6 +8,7 @@
 * [x] **Pop-up continui finestre CMD/Shell durante i trasferimenti**: Risolto con `subprocess.CREATE_NO_WINDOW` su tutte le chiamate esterne (Windows) e shortcut avviata direttamente con `pythonw.exe`.
 * [x] **File .bak duplicati sul Desktop**: Reindirizzato il backup dei collegamenti in `AppData\Roaming\gc-chatsync\backups\shortcuts`.
 * [x] **Timeout 180s e 10s per Rate Limit Google Drive (HTTP 403)**: Su trasferimenti multipli simultanei, il client ID condiviso di rclone veniva temporaneamente limitato da Google (pacing esponenziale fino a 32s). Risolto introducendo `--tpslimit 8`, riducendo workers a 2 e transfers a 2, e aumentando i timeout operativi (30s per il ping, 600s per il sync massivo).
+* [x] **Push bloccato alla chiusura per mancata esclusione di 8.700 file `.system_generated/steps`**: La sintassi `**/.system_generated/...` non veniva interpretata ricorsivamente da rclone, causando il tentativo di sincronizzare quasi 9.000 micro-file intermedi di step/log delle conversazioni. Con la correzione a `steps/**`, `tasks/**`, `messages/**`, `chunks/**`, il conteggio dei file di `brain` è sceso da 8.975 a 258 file utili, riducendo il tempo di upload da oltre 18 minuti a 3 secondi.
 
 ---
 
