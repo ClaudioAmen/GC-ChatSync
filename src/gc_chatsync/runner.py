@@ -52,10 +52,14 @@ def is_antigravity_process_running() -> bool:
     current_pid = os.getpid()
     if sys.platform == "win32":
         try:
+            kwargs = {}
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             out = subprocess.check_output(
                 ["tasklist", "/FI", "IMAGENAME eq Antigravity.exe", "/NH"],
                 text=True,
                 timeout=5,
+                **kwargs,
             )
             return "antigravity.exe" in out.lower()
         except Exception:
@@ -100,6 +104,18 @@ class SyncStatus:
     session_dirty: bool = False
     active_device: Optional[str] = None
     active_since_utc: Optional[str] = None
+
+    @property
+    def connected(self) -> bool:
+        return self.drive_connected
+
+    @property
+    def last_device(self) -> Optional[str]:
+        return self.cloud_last_device
+
+    @property
+    def last_sync_utc(self) -> Optional[str]:
+        return self.cloud_last_sync_utc
 
 
 class SyncRunner:
@@ -205,7 +221,7 @@ class SyncRunner:
                 remote_projects_staging = tmp_path / "remote_projects"
                 remote_db_staging = tmp_path / "remote_summaries.db"
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                     f_conv = executor.submit(self.drive.pull_conversations, conv_dir)
                     f_brain = executor.submit(self.drive.pull_brain, brain_dir)
                     f_proj = executor.submit(self.drive.pull_projects, remote_projects_staging)
@@ -334,7 +350,7 @@ class SyncRunner:
                 brain_dir = self.data_dir / "brain"
                 logger.info("Uploading conversations, brain, and projects concurrently...")
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                     futures = []
                     if staged_conv_dir.is_dir():
                         futures.append(executor.submit(self.drive.push_conversations, staged_conv_dir))

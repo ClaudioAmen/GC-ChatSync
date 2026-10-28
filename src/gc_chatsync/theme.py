@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import platform
 import subprocess
+import sys
 from dataclasses import dataclass
 
 logger = logging.getLogger("gc_chatsync.theme")
@@ -81,7 +82,10 @@ LIGHT_PALETTE = Palette(
 def _run(cmd: list[str]) -> str:
     """Run a short command and return stripped stdout ('' on any failure)."""
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=False)
+        kwargs = {}
+        if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=False, **kwargs)
         if res.returncode != 0:
             return ""
         return res.stdout.strip().strip("'\"")

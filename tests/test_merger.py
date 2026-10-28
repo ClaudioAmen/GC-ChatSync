@@ -1,7 +1,9 @@
 """Unit tests for SQLite database merge engine."""
 
+import gc
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -23,11 +25,21 @@ class TestDatabaseMerger(unittest.TestCase):
         self.remote_db = self.dir_path / "remote.db"
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        gc.collect()
+        try:
+            self.temp_dir.cleanup()
+        except PermissionError:
+            time.sleep(0.1)
+            gc.collect()
+            try:
+                self.temp_dir.cleanup()
+            except Exception:
+                pass
 
     def _create_sample_db(self, path: Path):
         """Create sample conversation_summaries DB schema."""
-        with sqlite3.connect(path) as conn:
+        conn = sqlite3.connect(path)
+        try:
             conn.execute("""
                 CREATE TABLE conversation_summaries (
                     conversation_id TEXT PRIMARY KEY,
@@ -46,86 +58,122 @@ class TestDatabaseMerger(unittest.TestCase):
                     workspace
                 );
             """)
+            conn.commit()
+        finally:
+            conn.close()
 
     def test_merge_inserts_new_conversations(self):
         self._create_sample_db(self.local_db)
         self._create_sample_db(self.remote_db)
 
         # Local has conversation A
-        with sqlite3.connect(self.local_db) as conn:
-            conn.execute("""
+        conn_l = sqlite3.connect(self.local_db)
+        try:
+            conn_l.execute("""
                 INSERT INTO conversation_summaries VALUES
                 ('id-A', 'Local Chat A', 'Hello', 5, '2026-10-28 10:00:00', 'file:///home/claudio', 'proj-1');
             """)
+            conn_l.commit()
+        finally:
+            conn_l.close()
 
         # Remote has conversation B
-        with sqlite3.connect(self.remote_db) as conn:
-            conn.execute("""
+        conn_r = sqlite3.connect(self.remote_db)
+        try:
+            conn_r.execute("""
                 INSERT INTO conversation_summaries VALUES
                 ('id-B', 'Remote Chat B', 'World', 10, '2026-10-28 11:00:00', 'file:///C:/Users', 'proj-2');
             """)
+            conn_r.commit()
+        finally:
+            conn_r.close()
 
         result = merge_summaries_databases(self.local_db, self.remote_db)
         self.assertEqual(result.inserted, 1)
 
         # Verify local now has both A and B
-        with sqlite3.connect(self.local_db) as conn:
-            rows = conn.execute("SELECT conversation_id, title FROM conversation_summaries ORDER BY conversation_id;").fetchall()
+        conn_check = sqlite3.connect(self.local_db)
+        try:
+            rows = conn_check.execute("SELECT conversation_id, title FROM conversation_summaries ORDER BY conversation_id;").fetchall()
             self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0][0], "id-A")
             self.assertEqual(rows[1][0], "id-B")
+        finally:
+            conn_check.close()
 
     def test_merge_updates_newer_record(self):
         self._create_sample_db(self.local_db)
         self._create_sample_db(self.remote_db)
 
         # Local has chat A with step_count 5
-        with sqlite3.connect(self.local_db) as conn:
-            conn.execute("""
+        conn_l = sqlite3.connect(self.local_db)
+        try:
+            conn_l.execute("""
                 INSERT INTO conversation_summaries VALUES
                 ('id-A', 'Chat A Old', 'Old Preview', 5, '2026-10-28 10:00:00', '', '');
             """)
+            conn_l.commit()
+        finally:
+            conn_l.close()
 
         # Remote has chat A with step_count 12 and newer timestamp
-        with sqlite3.connect(self.remote_db) as conn:
-            conn.execute("""
+        conn_r = sqlite3.connect(self.remote_db)
+        try:
+            conn_r.execute("""
                 INSERT INTO conversation_summaries VALUES
                 ('id-A', 'Chat A Updated', 'New Preview', 12, '2026-10-28 12:00:00', '', '');
             """)
+            conn_r.commit()
+        finally:
+            conn_r.close()
 
         result = merge_summaries_databases(self.local_db, self.remote_db)
         self.assertEqual(result.updated, 1)
 
-        with sqlite3.connect(self.local_db) as conn:
-            row = conn.execute("SELECT title, step_count FROM conversation_summaries WHERE conversation_id='id-A'").fetchone()
+        conn_check = sqlite3.connect(self.local_db)
+        try:
+            row = conn_check.execute("SELECT title, step_count FROM conversation_summaries WHERE conversation_id='id-A'").fetchone()
             self.assertEqual(row[0], "Chat A Updated")
             self.assertEqual(row[1], 12)
+        finally:
+            conn_check.close()
 
     def test_merge_ignores_older_remote_record(self):
         self._create_sample_db(self.local_db)
         self._create_sample_db(self.remote_db)
 
         # Local has newer chat A
-        with sqlite3.connect(self.local_db) as conn:
-            conn.execute("""
+        conn_l = sqlite3.connect(self.local_db)
+        try:
+            conn_l.execute("""
                 INSERT INTO conversation_summaries VALUES
                 ('id-A', 'Local Newer', 'Local', 20, '2026-10-28 15:00:00', '', '');
             """)
+            conn_l.commit()
+        finally:
+            conn_l.close()
 
         # Remote has older chat A
-        with sqlite3.connect(self.remote_db) as conn:
-            conn.execute("""
+        conn_r = sqlite3.connect(self.remote_db)
+        try:
+            conn_r.execute("""
                 INSERT INTO conversation_summaries VALUES
                 ('id-A', 'Remote Stale', 'Remote', 5, '2026-10-28 09:00:00', '', '');
             """)
+            conn_r.commit()
+        finally:
+            conn_r.close()
 
         result = merge_summaries_databases(self.local_db, self.remote_db)
         self.assertEqual(result.updated, 0)
         self.assertEqual(result.inserted, 0)
 
-        with sqlite3.connect(self.local_db) as conn:
-            row = conn.execute("SELECT title FROM conversation_summaries WHERE conversation_id='id-A'").fetchone()
+        conn_check = sqlite3.connect(self.local_db)
+        try:
+            row = conn_check.execute("SELECT title FROM conversation_summaries WHERE conversation_id='id-A'").fetchone()
             self.assertEqual(row[0], "Local Newer")
+        finally:
+            conn_check.close()
 
     def test_backup_creation_and_pruning(self):
         self._create_sample_db(self.local_db)
@@ -178,9 +226,19 @@ class TestDatabaseMerger(unittest.TestCase):
 
     def test_schema_validation_fails_on_missing_required_column(self):
         # Create DB missing last_modified_time
-        with sqlite3.connect(self.local_db) as conn:
-            conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT);")
-        self._create_sample_db(self.remote_db)
+        conn = sqlite3.connect(self.local_db)
+        try:
+            conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY);")
+            conn.commit()
+        finally:
+            conn.close()
+
+        conn2 = sqlite3.connect(self.remote_db)
+        try:
+            conn2.execute("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, last_modified_time DATETIME);")
+            conn2.commit()
+        finally:
+            conn2.close()
 
         with self.assertRaises(DatabaseMergeError):
             merge_summaries_databases(self.local_db, self.remote_db)

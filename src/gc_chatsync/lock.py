@@ -37,12 +37,16 @@ def is_pid_running(pid: int) -> bool:
             # Fallback for Windows without admin privileges
             try:
                 import subprocess
+                kwargs = {}
+                if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+                    kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
                 out = subprocess.run(
                     ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
                     capture_output=True,
                     text=True,
                     check=False,
                     timeout=3,
+                    **kwargs,
                 )
                 return str(pid) in out.stdout
             except Exception:

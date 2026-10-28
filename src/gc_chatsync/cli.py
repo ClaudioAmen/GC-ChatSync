@@ -328,6 +328,11 @@ def _cmd_restore_shortcut(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[list[str]] = None) -> int:
     """Entry point for the gc-chatsync command line interface."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     raw_args = sys.argv[1:] if argv is None else argv
     # Filter out freedesktop field codes (%U, %F, etc.) and empty args if passed by desktop launchers
     cleaned_args = [a for a in raw_args if a not in ("%U", "%u", "%F", "%f", "")]

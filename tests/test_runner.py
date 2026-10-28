@@ -1,11 +1,14 @@
-"""Unit tests for SyncRunner and orchestration."""
+"""Unit tests for SyncRunner lifecycle orchestration."""
 
+import gc
+import json
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from gc_chatsync.config import AppConfig
 from gc_chatsync.drive import SyncManifest
@@ -37,7 +40,16 @@ class TestSyncRunner(unittest.TestCase):
     def tearDown(self):
         self.patch_lock.stop()
         self.patch_which.stop()
-        self.temp_dir.cleanup()
+        gc.collect()
+        try:
+            self.temp_dir.cleanup()
+        except PermissionError:
+            time.sleep(0.1)
+            gc.collect()
+            try:
+                self.temp_dir.cleanup()
+            except Exception:
+                pass
 
     @patch("gc_chatsync.drive.DriveClient.test_connection")
     @patch("gc_chatsync.drive.DriveClient.get_manifest")
@@ -51,26 +63,31 @@ class TestSyncRunner(unittest.TestCase):
         runner = SyncRunner(self.cfg)
         status = runner.get_status()
 
-        self.assertTrue(status.drive_connected)
+        self.assertTrue(status.connected)
         self.assertTrue(status.in_sync)
-        self.assertEqual(status.cloud_last_device, "test-laptop")
+        self.assertEqual(status.last_sync_utc, "2026-10-28T16:00:00Z")
 
     @patch("gc_chatsync.drive.DriveClient.test_connection")
     @patch("gc_chatsync.drive.DriveClient.get_manifest")
-    def test_pull_skips_when_device_matches(self, mock_manifest, mock_conn):
+    def test_get_status_cloud_ahead(self, mock_manifest, mock_conn):
         mock_conn.return_value = True
         mock_manifest.return_value = SyncManifest(
-            last_device="test-laptop",
-            last_sync_utc="2026-10-28T16:00:00Z"
+            last_device="other-desktop",
+            last_sync_utc="2026-10-28T17:00:00Z",
+            epoch=3,
         )
 
         runner = SyncRunner(self.cfg)
-        # Should return True without pulling
-        self.assertTrue(runner.pull(force=False))
+        status = runner.get_status()
+
+        self.assertTrue(status.connected)
+        self.assertFalse(status.in_sync)
+        self.assertEqual(status.last_device, "other-desktop")
 
     def test_translate_local_db_workspace_uris(self):
         db_path = self.data_dir / "conversation_summaries.db"
-        with sqlite3.connect(db_path) as conn:
+        conn = sqlite3.connect(db_path)
+        try:
             conn.execute("""
                 CREATE TABLE conversation_summaries (
                     conversation_id TEXT PRIMARY KEY,
@@ -81,17 +98,23 @@ class TestSyncRunner(unittest.TestCase):
                 INSERT INTO conversation_summaries VALUES
                 ('cid-1', '["file:///C:/Users/Claudio/Documents/progetti"]');
             """)
+            conn.commit()
+        finally:
+            conn.close()
 
         runner = SyncRunner(self.cfg)
         runner._translate_local_db_workspace_uris(db_path)
 
-        with sqlite3.connect(db_path) as conn:
-            row = conn.execute("SELECT workspace_uris FROM conversation_summaries WHERE conversation_id='cid-1'").fetchone()
+        conn2 = sqlite3.connect(db_path)
+        try:
+            row = conn2.execute("SELECT workspace_uris FROM conversation_summaries WHERE conversation_id='cid-1'").fetchone()
             if sys.platform == "win32":
                 self.assertIn("file:///c:", row[0].lower())
             else:
                 self.assertTrue(row[0].startswith('["file:///'))
                 self.assertNotIn("C:/Users", row[0])
+        finally:
+            conn2.close()
 
     @patch("gc_chatsync.runner.is_session_dirty")
     @patch("gc_chatsync.drive.DriveClient.get_manifest")

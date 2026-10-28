@@ -55,7 +55,7 @@ class TestCLI(unittest.TestCase):
     @patch("gc_chatsync.cli.launch_gui")
     @patch("gc_chatsync.cli.sys.platform", "linux")
     def test_main_without_args_headless_prints_help(self, mock_gui):
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {"HOME": "/tmp"}, clear=True):
             self.assertEqual(main([]), 0)
         mock_gui.assert_not_called()
 
