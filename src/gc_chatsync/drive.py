@@ -149,12 +149,15 @@ class DriveClient:
         extra_kwargs = {}
         if sys.platform == "win32":
             extra_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        if input_data is not None:
+            extra_kwargs["input"] = input_data
+        else:
+            extra_kwargs["stdin"] = subprocess.DEVNULL
         try:
             res = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                input=input_data,
                 timeout=timeout,
                 check=False,
                 **extra_kwargs,
