@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+
+# Temporary / OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+
+# Sensitive & local configs
+*.env
+tokens.json
+credentials.json
+sync_state.local.json
+
+# Local Antigravity test data
+test_data/
+*.db-wal
+*.db-shm
