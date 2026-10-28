@@ -50,7 +50,7 @@ Please perform the following onboarding workflow step-by-step:
 
 ### Step 3: Package Installation
 1. Install GC-ChatSync:
-   - Linux: `pipx install .` or `pip install --user --break-system-packages -e .` (or standard `pip install -e .` within a virtual environment).
+   - Linux: `pipx install .` (recommended) or `pip install --user --break-system-packages -e .` (or standard `pip install -e .` within a virtual environment).
    - Windows: `pip install -e .`
 2. Verify that `gc-chatsync --version` responds in the terminal.
 

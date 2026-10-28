@@ -19,6 +19,9 @@ class TestSyncRunner(unittest.TestCase):
         self.data_dir = self.tmp_path / "antigravity"
         self.data_dir.mkdir()
 
+        self.patch_which = patch("shutil.which", return_value="/usr/bin/rclone")
+        self.mock_which = self.patch_which.start()
+
         self.patch_lock = patch("gc_chatsync.runner.ProcessLock")
         self.mock_lock = self.patch_lock.start()
 
@@ -32,6 +35,7 @@ class TestSyncRunner(unittest.TestCase):
 
     def tearDown(self):
         self.patch_lock.stop()
+        self.patch_which.stop()
         self.temp_dir.cleanup()
 
     @patch("gc_chatsync.drive.DriveClient.test_connection")
@@ -126,6 +130,28 @@ class TestSyncRunner(unittest.TestCase):
 
         self.assertEqual(status.active_device, "windows-desktop")
         self.assertEqual(status.active_since_utc, "2026-10-28T18:30:00Z")
+
+    @patch("subprocess.Popen")
+    def test_launch_app_calls_on_launched(self, mock_popen):
+        mock_proc = mock_popen.return_value
+        mock_proc.wait.return_value = 0
+        mock_proc.returncode = 0
+
+        fake_bin = self.tmp_path / "fake_antigravity"
+        fake_bin.touch()
+
+        runner = SyncRunner(self.cfg)
+        runner.config.antigravity_bin_path = str(fake_bin)
+
+        called = False
+
+        def cb():
+            nonlocal called
+            called = True
+
+        code = runner.launch_app(on_launched=cb)
+        self.assertEqual(code, 0)
+        self.assertTrue(called)
 
 
 if __name__ == "__main__":

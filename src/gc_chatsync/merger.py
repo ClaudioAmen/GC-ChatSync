@@ -78,6 +78,20 @@ def is_db_exclusive_accessible(db_path: Path, timeout: float = 2.0) -> bool:
         return False
 
 
+def are_all_dbs_accessible(data_dir: Path, timeout: float = 0.5) -> bool:
+    """Verify that all conversation databases and the summaries database are free of active locks."""
+    local_db = data_dir / "conversation_summaries.db"
+    if not is_db_exclusive_accessible(local_db, timeout=timeout):
+        return False
+
+    conv_dir = data_dir / "conversations"
+    if conv_dir.is_dir():
+        for db_file in conv_dir.glob("*.db"):
+            if not is_db_exclusive_accessible(db_file, timeout=timeout):
+                return False
+    return True
+
+
 def create_backup(db_path: Path, max_backups: int = 5) -> Optional[Path]:
     """Create a crash-safe timestamped backup of the database and prune old backups.
 
@@ -185,6 +199,14 @@ def merge_summaries_databases(local_db_path: Path, remote_db_path: Path) -> Merg
             raise DatabaseMergeError(f"Local database schema missing required columns: {missing_local}")
         if missing_remote:
             raise DatabaseMergeError(f"Remote database schema missing required columns: {missing_remote}")
+
+        if local_cols != remote_cols:
+            diff = local_cols ^ remote_cols
+            raise DatabaseMergeError(
+                f"Schema mismatch detected in conversation_summaries between local and remote ({diff}). "
+                "Aborting merge to prevent dropping columns across different Antigravity versions. "
+                "Please update Antigravity on both machines to match."
+            )
 
         # Common columns to merge
         common_cols = [c for c in get_table_columns(conn, "main", "conversation_summaries") if c in remote_cols]

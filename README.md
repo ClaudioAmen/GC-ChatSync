@@ -158,8 +158,10 @@ rclone config
 git clone https://github.com/ClaudioAmen/GC-ChatSync.git
 cd GC-ChatSync
 
-# Linux (recommended: pipx or user install):
-pip install --user --break-system-packages -e .   # or: pipx install .
+# Linux (recommended: pipx or virtual environment):
+pipx install .
+# Or without pipx:
+pip install --user --break-system-packages -e .
 
 # Windows:
 pip install -e .
@@ -201,7 +203,9 @@ gc-chatsync setup
    ```bash
    chmod 600 ~/.config/rclone/rclone.conf
    ```
-2. **Scoped Drive Permissions:** When running `rclone config`, you can choose Scope `2` (`drive.file`). This limits rclone's access strictly to files and folders created by GC-ChatSync, keeping the rest of your Google Drive inaccessible.
+2. **Drive Access Scopes (Trade-offs):**
+   - **Scope 1 (`drive` - Full Access, Recommended Default):** Easiest setup for personal use. Allows any device authorized with your personal Google Account to read and write the `GC-ChatSync` folder without configuring custom Google Cloud developer credentials.
+   - **Scope 2 (`drive.file` - Restricted Scope):** Limits rclone strictly to files created by the application itself. If you choose Scope 2, you **must** configure the same custom OAuth `client_id` and `client_secret` in `rclone` on all your devices; otherwise, a second machine will not have permission to view or sync files created by the first machine.
 
 ---
 
@@ -210,7 +214,7 @@ gc-chatsync setup
 - **First Run on Second PC:** When launching GC-ChatSync on your second PC for the first time, use `gc-chatsync pull -f` (or click **"Riprova / Pull"** in the GUI) to pull the initial history from Drive.
 - **Non-Destructive Deletions:** Because GC-ChatSync uses `copy --update` to safeguard your chat history, a conversation database deleted on one PC is not deleted from Google Drive.
 - **Active Witness Tracking:** The cloud manifest tracks active sessions (`active_device`). If a machine powers off unexpectedly, the other machine warns you and performs a safety merge before pushing.
-- **Schema Safety:** GC-ChatSync verifies base SQLite schema columns (`conversation_id`, `last_modified_time`) and dynamically maps columns to protect your database if Antigravity versions differ between machines.
+- **Schema Safety & Version Tracking:** GC-ChatSync records the Antigravity application version in the cloud manifest. If database schemas differ between devices, GC-ChatSync halts the merge to prevent column or metadata loss, prompting the user to update both installations.
 - **Shortcut Re-patching:** An official Antigravity application update may overwrite the desktop `.desktop` file or shortcut; simply run `gc-chatsync install-shortcut` to re-hook GC-ChatSync.
 - **Log Files:** Persistent session logs are written to `~/.config/gc-chatsync/logs/sync.log` (`%APPDATA%\gc-chatsync\logs\sync.log` on Windows) with automatic 5MB rotation.
 - **Active Lock:** If you see `Another GC-ChatSync instance is already running`, an active process is currently holding the sync lock. If a process was terminated abruptly, stale locks are automatically recovered on the subsequent run.

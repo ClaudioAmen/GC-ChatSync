@@ -16,6 +16,7 @@ from typing import Optional
 from gc_chatsync.config import (
     AppConfig,
     find_antigravity_executable,
+    get_antigravity_version,
     get_default_antigravity_projects_dir,
     get_system_name,
 )
@@ -26,7 +27,13 @@ from gc_chatsync.lock import (
     is_session_dirty,
     mark_session_dirty,
 )
-from gc_chatsync.merger import checkpoint_db, is_db_exclusive_accessible, merge_summaries_databases
+from gc_chatsync.merger import (
+    are_all_dbs_accessible,
+    checkpoint_db,
+    create_backup,
+    is_db_exclusive_accessible,
+    merge_summaries_databases,
+)
 from gc_chatsync.project_mapper import (
     translate_project_json,
     translate_workspace_uris_string,
@@ -127,6 +134,13 @@ class SyncRunner:
                 )
                 return True
 
+            local_ver = get_antigravity_version(self.config.antigravity_bin_path)
+            if manifest and manifest.antigravity_version and local_ver and manifest.antigravity_version != local_ver:
+                logger.warning(
+                    f"Different Antigravity versions detected: local={local_ver}, remote={manifest.antigravity_version}. "
+                    "Verifying schema compatibility before merge..."
+                )
+
             logger.info("Pulling conversations and brain artifacts from Google Drive...")
             conv_dir = self.data_dir / "conversations"
             brain_dir = self.data_dir / "brain"
@@ -138,7 +152,7 @@ class SyncRunner:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 tmp_path = Path(tmp_dir)
 
-                # 2. Pull remote projects into staging and translate URIs
+                # 2. Pull remote projects into staging and translate URIs (only overwrite if remote is newer)
                 remote_projects_staging = tmp_path / "remote_projects"
                 self.drive.pull_projects(remote_projects_staging)
 
@@ -146,10 +160,13 @@ class SyncRunner:
                     self.projects_dir.mkdir(parents=True, exist_ok=True)
                     for proj_file in remote_projects_staging.glob("*.json"):
                         try:
+                            target_file = self.projects_dir / proj_file.name
+                            if target_file.is_file() and target_file.stat().st_mtime >= proj_file.stat().st_mtime:
+                                logger.debug(f"Local project {target_file.name} is newer than remote. Preserving.")
+                                continue
                             with open(proj_file, "r", encoding="utf-8") as f:
                                 raw_data = json.load(f)
                             translated_data = translate_project_json(raw_data, target_os=current_os)
-                            target_file = self.projects_dir / proj_file.name
                             with open(target_file, "w", encoding="utf-8") as f:
                                 json.dump(translated_data, f, indent=2)
                             logger.debug(f"Translated and saved project definition: {target_file.name}")
@@ -213,9 +230,18 @@ class SyncRunner:
                 logger.warning("Google Drive is unreachable. Push postponed.")
                 return False
 
-            # 1. Flush local SQLite WAL journals
+            # Verify that databases are not locked by background processes
+            if not are_all_dbs_accessible(self.data_dir, timeout=2.0):
+                logger.warning("Databases are still locked by background processes. Postponing push to protect integrity.")
+                return False
+
+            # 1. Flush local SQLite WAL journals with busy check & snapshot
             local_db = self.data_dir / "conversation_summaries.db"
-            checkpoint_db(local_db)
+            if local_db.is_file():
+                if not checkpoint_db(local_db):
+                    logger.warning("Could not checkpoint conversation_summaries.db (database busy). Postponing push.")
+                    return False
+                create_backup(local_db)
 
             conv_dir = self.data_dir / "conversations"
             if conv_dir.is_dir():
@@ -233,10 +259,21 @@ class SyncRunner:
                 logger.info("Uploading project configurations...")
                 self.drive.push_projects(self.projects_dir)
 
-            # 4. Upload conversation_summaries.db
+            # 4. Upload conversation_summaries.db from a lock-free snapshot
             if local_db.is_file():
                 logger.info("Uploading conversation_summaries.db...")
-                self.drive.push_summaries(local_db)
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    staged_db = Path(tmp_dir) / "conversation_summaries.db"
+                    try:
+                        s_conn = sqlite3.connect(local_db)
+                        d_conn = sqlite3.connect(staged_db)
+                        s_conn.backup(d_conn)
+                        d_conn.close()
+                        s_conn.close()
+                        self.drive.push_summaries(staged_db)
+                    except Exception as e:
+                        logger.warning(f"Snapshot creation failed ({e}), pushing directly: {local_db}")
+                        self.drive.push_summaries(local_db)
 
             # 5. Update cloud manifest token with incremented epoch and release active witness
             existing_manifest = self.drive.get_manifest()
@@ -246,6 +283,7 @@ class SyncRunner:
                 epoch=next_epoch,
                 active_device=None,
                 active_since_utc=None,
+                antigravity_version=get_antigravity_version(self.config.antigravity_bin_path),
             )
             self.drive.put_manifest(new_manifest)
 
@@ -254,7 +292,11 @@ class SyncRunner:
             logger.info(f"Sync complete! State updated to '{self.config.device_id}' (epoch {next_epoch}).")
             return True
 
-    def launch_app(self, extra_args: Optional[list[str]] = None) -> int:
+    def launch_app(
+        self,
+        extra_args: Optional[list[str]] = None,
+        on_launched: Optional[Any] = None,
+    ) -> int:
         """Launch Antigravity executable and wait for it to exit."""
         bin_path_str = self.config.antigravity_bin_path
         if not bin_path_str:
@@ -275,14 +317,23 @@ class SyncRunner:
 
         try:
             proc = subprocess.Popen(cmd)
+            if on_launched and callable(on_launched):
+                try:
+                    on_launched()
+                except Exception as cb_err:
+                    logger.debug(f"on_launched callback error: {cb_err}")
             proc.wait()
 
-            # Wait up to 5s if child background processes still hold exclusive lock on DB
-            local_db = self.data_dir / "conversation_summaries.db"
+            # Wait up to 5s if child background processes still hold exclusive lock on DBs
+            all_clear = False
             for _ in range(10):
-                if is_db_exclusive_accessible(local_db, timeout=0.5):
+                if are_all_dbs_accessible(self.data_dir, timeout=0.5):
+                    all_clear = True
                     break
                 time.sleep(0.5)
+
+            if not all_clear:
+                logger.warning("One or more databases are still locked by background processes.")
 
             logger.info("Antigravity closed gracefully.")
             return proc.returncode
@@ -308,28 +359,41 @@ class SyncRunner:
                 self.push()
 
             print("🌌 [GC-ChatSync] Step 1/3: Checking & Pulling from Google Drive...")
-            self.pull()
+            try:
+                self.pull()
+            except Exception as e:
+                logger.warning(f"Pull could not complete ({e}). Proceeding in local mode.")
+                print(f"⚠️ [GC-ChatSync] Pull failed ({e}). Proceeding with launch in offline mode...")
 
             # Check if another device has an unclosed active session
             manifest = self.drive.get_manifest()
             if manifest and manifest.active_device and manifest.active_device != self.config.device_id:
+                when_str = (manifest.active_since_utc or "")[:16].replace("T", " ")
                 logger.warning(
-                    f"Notice: Device '{manifest.active_device}' was marked active since {manifest.active_since_utc}. "
+                    f"Notice: Device '{manifest.active_device}' was marked active since {when_str}. "
                     "It may not have closed cleanly."
                 )
-                print(f"⚠️ [GC-ChatSync] Device '{manifest.active_device}' was active since {manifest.active_since_utc}.")
+                print(f"\n⚠️ [GC-ChatSync] Notice: Device '{manifest.active_device}' was active since {when_str} UTC.")
                 print("   If it exited abruptly without pushing, latest changes from that device might not be on Drive.")
+                try:
+                    ans = input("Do you want to proceed and launch anyway? [Y/n]: ").strip().lower()
+                    if ans in ("n", "no"):
+                        print("Launch cancelled.")
+                        return 0
+                except (EOFError, KeyboardInterrupt):
+                    return 0
 
             # Claim active witness in cloud
             try:
                 curr_epoch = manifest.epoch if manifest else 1
-                curr_last = manifest.last_device if manifest else self.config.device_id
+                curr_last = manifest.last_device if manifest else ""
                 witness_manifest = SyncManifest(
                     last_device=curr_last,
                     last_sync_utc=manifest.last_sync_utc if manifest else "",
                     epoch=curr_epoch,
                     active_device=self.config.device_id,
                     active_since_utc=datetime.now(timezone.utc).isoformat(),
+                    antigravity_version=get_antigravity_version(self.config.antigravity_bin_path),
                 )
                 self.drive.put_manifest(witness_manifest)
             except Exception as e:

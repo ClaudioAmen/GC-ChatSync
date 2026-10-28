@@ -19,13 +19,18 @@ except ImportError:
     tk = None  # type: ignore
     ttk = None  # type: ignore
 
+from datetime import datetime, timezone
+
 from gc_chatsync import __version__
 from gc_chatsync.config import (
     AppConfig,
+    get_antigravity_version,
     get_log_file_path,
     get_system_name,
     load_config,
 )
+from gc_chatsync.drive import SyncManifest
+from gc_chatsync.lock import mark_session_dirty
 from gc_chatsync.runner import SyncRunner, SyncStatus
 from gc_chatsync.theme import Palette, get_palette
 
@@ -314,22 +319,143 @@ class ChatSyncGUI:
 
     # ----------------------------------------------------------------- actions
     def on_run_clicked(self) -> None:
-        """Execute the full lifecycle: Pull -> Launch -> Push."""
+        """Execute the full lifecycle: Pull -> Launch (auto-hide GUI) -> Push (auto-close GUI)."""
         if self.is_running:
             return
+
+        # Check if another device has an unclosed active session
+        try:
+            status = self.runner.get_status()
+            if status.active_device and status.active_device != self.runner.config.device_id:
+                when_str = (status.active_since_utc or "")[:16].replace("T", " ")
+                proceed = messagebox.askyesno(
+                    "GC-ChatSync: Sessione attiva rilevata",
+                    f"Attenzione: Il dispositivo '{status.active_device}' risulta ancora attivo dal {when_str} UTC.\n\n"
+                    "Se l'altra macchina non ha chiuso normalmente, le sue ultime modifiche potrebbero non essere su Google Drive.\n\n"
+                    "Vuoi continuare e avviare comunque?",
+                )
+                if not proceed:
+                    return
+        except Exception:
+            pass
+
         self.is_running = True
-        self._run_in_background("Sincronizzazione e avvio in corso...", self.runner.run,
-                                None, "Errore GC-ChatSync")
+        self._set_buttons_state(False)
+        self.lbl_status_bar.configure(text="Sincronizzazione da Google Drive in corso...")
+
+        def lifecycle_worker() -> None:
+            try:
+                # 1. PULL (proceed in offline mode if pull fails)
+                try:
+                    self.runner.pull()
+                except Exception as e:
+                    logger.warning(f"Pull could not complete ({e}). Proceeding in offline mode.")
+
+                self.root.after(0, lambda: self.lbl_status_bar.configure(text="Avvio di Antigravity in corso..."))
+
+                # Mark session dirty before launching the editor
+                mark_session_dirty(self.runner.config.device_id)
+
+                # Claim active witness asynchronously so Drive latency never delays launching Antigravity
+                def claim_witness_async() -> None:
+                    try:
+                        manifest = self.runner.drive.get_manifest()
+                        curr_epoch = manifest.epoch if manifest else 1
+                        curr_last = manifest.last_device if manifest else ""
+                        witness_manifest = SyncManifest(
+                            last_device=curr_last,
+                            last_sync_utc=manifest.last_sync_utc if manifest else "",
+                            epoch=curr_epoch,
+                            active_device=self.runner.config.device_id,
+                            active_since_utc=datetime.now(timezone.utc).isoformat(),
+                            antigravity_version=get_antigravity_version(self.runner.config.antigravity_bin_path),
+                        )
+                        self.runner.drive.put_manifest(witness_manifest)
+                    except Exception as err:
+                        logger.debug(f"Could not claim active witness: {err}")
+
+                threading.Thread(target=claim_witness_async, daemon=True).start()
+
+                # 2. HIDE GUI ONLY AFTER ANTIGRAVITY IS ACTUALLY SPAWNED
+                def on_app_started() -> None:
+                    self.root.after(0, self.root.withdraw)
+
+                # Wait for Antigravity to run and exit
+                self.runner.launch_app(on_launched=on_app_started)
+
+                # 3. RESTORE GUI TO SHOW PUSH PROGRESS
+                def show_push_status() -> None:
+                    self.root.deiconify()
+                    self.lbl_status_bar.configure(text="Salvataggio e caricamento su Google Drive in corso...")
+
+                self.root.after(0, show_push_status)
+
+                # 4. PUSH
+                push_ok = self.runner.push()
+
+                if push_ok:
+                    def close_success() -> None:
+                        self.lbl_status_bar.configure(text="Sincronizzazione completata! Chiusura...")
+                        self.root.after(800, self.root.destroy)
+
+                    self.root.after(0, close_success)
+                else:
+                    def show_warning() -> None:
+                        self.root.deiconify()
+                        messagebox.showwarning(
+                            "GC-ChatSync",
+                            "Il caricamento su Drive è stato rimandato (Drive non raggiungibile o database occupato).\n"
+                            "I dati locali rimangono intatti e verranno caricati alla prossima sessione.",
+                        )
+                        self._set_buttons_state(True)
+                        self.refresh_status_async()
+
+                    self.root.after(0, show_warning)
+
+            except Exception as e:
+                logger.error(f"Errore nel ciclo di esecuzione: {e}", exc_info=True)
+
+                def show_err() -> None:
+                    self.root.deiconify()
+                    messagebox.showerror("Errore GC-ChatSync", str(e))
+                    self._set_buttons_state(True)
+                    self.refresh_status_async()
+
+                self.root.after(0, show_err)
+            finally:
+                self.is_running = False
+
+        threading.Thread(target=lifecycle_worker, daemon=True).start()
 
     def on_bypass_clicked(self) -> None:
-        """Launch Antigravity directly without running cloud pull or push."""
+        """Launch Antigravity directly, hiding GUI only after launch and closing automatically on exit."""
         if self.is_running:
             return
         self.is_running = True
-        self._run_in_background("Avvio diretto di Antigravity...",
-                                lambda: self.runner.launch_app(),
-                                "Sessione diretta conclusa (nessuna sincronizzazione cloud eseguita).",
-                                "Errore Avvio")
+        self._set_buttons_state(False)
+        self.lbl_status_bar.configure(text="Avvio diretto di Antigravity...")
+
+        def bypass_worker() -> None:
+            try:
+                def on_app_started() -> None:
+                    self.root.after(0, self.root.withdraw)
+
+                self.runner.launch_app(on_launched=on_app_started)
+                self.root.after(0, self.root.destroy)
+            except Exception as e:
+                logger.error(f"Errore avvio diretto: {e}", exc_info=True)
+
+                def show_err() -> None:
+                    self.root.deiconify()
+                    messagebox.showerror("Errore Avvio", str(e))
+                    self._set_buttons_state(True)
+                    self.refresh_status_async()
+
+                self.root.after(0, show_err)
+            finally:
+                self.is_running = False
+
+        threading.Thread(target=bypass_worker, daemon=True).start()
 
     def on_pull_clicked(self) -> None:
         """Execute a manual pull with the force flag."""

@@ -138,7 +138,10 @@ class TestDatabaseMerger(unittest.TestCase):
         self.assertEqual(len(backups), 3)
 
     def test_merge_with_schema_mismatch(self):
-        """Buffer test: remote has a new column introduced in a newer Antigravity update."""
+        """Schema mismatch test: remote has a new column introduced in a newer Antigravity update.
+        
+        Merge should abort with DatabaseMergeError to prevent silently dropping the new column on push.
+        """
         self._create_sample_db(self.local_db)
         self._create_sample_db(self.remote_db)
 
@@ -154,17 +157,9 @@ class TestDatabaseMerger(unittest.TestCase):
         finally:
             conn.close()
 
-        # Merge should still succeed by introspecting common columns
-        result = merge_summaries_databases(self.local_db, self.remote_db)
-        self.assertEqual(result.inserted, 1)
-
-        conn = sqlite3.connect(self.local_db)
-        try:
-            row = conn.execute("SELECT conversation_id, title FROM conversation_summaries WHERE conversation_id='id-C'").fetchone()
-            self.assertEqual(row[0], "id-C")
-            self.assertEqual(row[1], "Chat from updated Antigravity")
-        finally:
-            conn.close()
+        # Merge should raise DatabaseMergeError to safeguard schema integrity
+        with self.assertRaises(DatabaseMergeError):
+            merge_summaries_databases(self.local_db, self.remote_db)
 
     def test_is_db_exclusive_accessible(self):
         self._create_sample_db(self.local_db)

@@ -143,6 +143,22 @@ def find_antigravity_executable() -> Optional[Path]:
     return None
 
 
+def get_antigravity_version(bin_path: Optional[str] = None) -> Optional[str]:
+    """Detect Antigravity version from the installation directory if available."""
+    target_bin = Path(bin_path) if bin_path else find_antigravity_executable()
+    if not target_bin:
+        return None
+    try:
+        version_file = target_bin.parent / "version"
+        if version_file.is_file():
+            ver = version_file.read_text(encoding="utf-8").strip()
+            if ver:
+                return ver
+    except Exception:
+        pass
+    return None
+
+
 def load_config() -> AppConfig:
     """Load config from disk or create default."""
     cfg_file = get_config_file_path()
