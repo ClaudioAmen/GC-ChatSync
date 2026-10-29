@@ -22,10 +22,10 @@ class TestSyncRunner(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.tmp_path = Path(self.temp_dir.name)
-        self.data_dir = self.tmp_path / "antigravity"
+        self.tmp_path = Path(self.temp_dir.name).resolve()
+        self.data_dir = (self.tmp_path / "antigravity").resolve()
         self.data_dir.mkdir()
-        self.config_dir = self.tmp_path / "config"
+        self.config_dir = (self.tmp_path / "config").resolve()
         self.config_dir.mkdir()
 
         self.patch_cfg_dir = patch("gc_chatsync.lock.get_config_dir", return_value=self.config_dir)
@@ -308,13 +308,19 @@ class TestSyncRunner(unittest.TestCase):
     @patch("gc_chatsync.drive.DriveClient.test_connection", return_value=True)
     @patch("gc_chatsync.runner.get_last_push_timestamp", return_value=999999.0)
     @patch("gc_chatsync.merger.needs_db_snapshot")
-    def test_push_full_resets_last_push_timestamp(self, mock_needs, mock_ts, mock_conn, mock_running):
+    @patch("gc_chatsync.runner.needs_db_snapshot")
+    def test_push_full_resets_last_push_timestamp(
+        self, mock_runner_needs, mock_merger_needs, mock_ts, mock_conn, mock_running
+    ):
+        mock_runner_needs.return_value = True
+        mock_merger_needs.return_value = True
         runner = SyncRunner(self.cfg)
-        conv_dir = self.data_dir / "conversations"
+        conv_dir = (self.data_dir / "conversations").resolve()
         conv_dir.mkdir(parents=True, exist_ok=True)
         (conv_dir / "conv_a.db").touch()
 
-        with patch.object(runner.drive, "push_conversations"), \
+        with patch.object(runner.drive, "get_manifest", return_value=None), \
+             patch.object(runner.drive, "push_conversations"), \
              patch.object(runner.drive, "push_brain"), \
              patch.object(runner.drive, "push_projects"), \
              patch.object(runner.drive, "push_summaries"), \
@@ -322,7 +328,17 @@ class TestSyncRunner(unittest.TestCase):
              patch("gc_chatsync.merger.snapshot_db", return_value=True):
             runner.push(force=True, full=True)
 
-        mock_needs.assert_called_with(conv_dir / "conv_a.db", 0.0)
+        self.assertTrue(mock_merger_needs.called)
+        called_path, called_ts = mock_merger_needs.call_args[0]
+        self.assertEqual(called_path.name, "conv_a.db")
+        self.assertEqual(called_path.resolve(), (conv_dir / "conv_a.db").resolve())
+        self.assertEqual(called_ts, 0.0)
+
+        self.assertTrue(mock_runner_needs.called)
+        called_path_runner, called_ts_runner = mock_runner_needs.call_args[0]
+        self.assertEqual(called_path_runner.name, "conv_a.db")
+        self.assertEqual(called_path_runner.resolve(), (conv_dir / "conv_a.db").resolve())
+        self.assertEqual(called_ts_runner, 0.0)
 
     @patch("gc_chatsync.runner.is_antigravity_process_running", return_value=False)
     @patch("subprocess.Popen")
