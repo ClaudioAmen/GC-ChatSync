@@ -1,5 +1,6 @@
 """Unit tests for the CLI interface."""
 
+import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
@@ -61,12 +62,8 @@ class TestCLI(unittest.TestCase):
     @patch("gc_chatsync.cli.launch_gui")
     @patch("gc_chatsync.cli.sys.platform", "linux")
     def test_main_without_args_headless_prints_help(self, mock_gui):
-        env = {
-            "HOME": "/tmp",
-            "USERPROFILE": "C:\\Users\\Default" if sys.platform == "win32" else "/tmp",
-            "APPDATA": "C:\\Users\\Default\\AppData\\Roaming" if sys.platform == "win32" else "/tmp",
-        }
-        with patch.dict("os.environ", env, clear=True):
+        clean_env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
+        with patch.dict("os.environ", clean_env, clear=True):
             self.assertEqual(main([]), 0)
         mock_gui.assert_not_called()
 
