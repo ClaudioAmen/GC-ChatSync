@@ -134,7 +134,8 @@ When configuring Google Drive via `rclone config`, two permission scopes are ava
 Run `gc-chatsync reconcile` when you need to audit or repair local and cloud states:
 - **Unindexed Session Recovery:** Scans `conversations/*.db` for valid sessions not present in `conversation_summaries.db` and re-indexes them automatically.
 - **Corrupt File Quarantine:** Inspects local databases for SQLite corruption and quarantines broken files into `.corrupt/`.
-- **Stale Lock Recovery:** If a previous process was killed abruptly, witness locks older than 1 hour or belonging to inactive PIDs are safely cleared.
+- **Stale Lock Recovery:** If a previous process was killed abruptly, witness locks older than 15 minutes of inactivity are safely cleared.
+- **Manifest Integrity & Repair:** Validates `manifest.json` parsing. In case of cloud file corruption, recovers state from `manifest.json.bak` or reconstructs a clean token via `gc-chatsync doctor --repair-manifest`.
 
 ---
 

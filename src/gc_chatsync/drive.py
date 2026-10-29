@@ -40,11 +40,26 @@ EXCLUDE_PATTERNS = [
 ]
 
 
+def get_exclude_patterns(sync_full_brain: bool = False) -> List[str]:
+    """Return anchored exclude patterns, optionally omitting steps/tasks/messages if sync_full_brain is True."""
+    if sync_full_brain:
+        return [
+            p for p in EXCLUDE_PATTERNS
+            if not any(k in p for k in ("steps", "tasks", "messages", "subagents"))
+        ]
+    return list(EXCLUDE_PATTERNS)
+
+
 class RcloneError(Exception):
     """Base exception for rclone operations."""
     def __init__(self, message: str, returncode: Optional[int] = None):
         super().__init__(message)
         self.returncode = returncode
+
+
+class ManifestCorruptedError(RcloneError):
+    """Raised when remote manifest.json exists on Drive but contains invalid or corrupted JSON."""
+    pass
 
 
 NOT_FOUND_CODES = {3, 4}
@@ -127,6 +142,7 @@ class DriveClient:
         self._rclone_bin = self._find_rclone()
         self._cached_manifest: Optional[SyncManifest] = None
         self._cached_manifest_time: float = 0.0
+        self._manifest_lock = threading.Lock()
 
     @staticmethod
     def _find_rclone() -> str:
@@ -276,9 +292,13 @@ class DriveClient:
         """Check if remote is accessible and authorized.
         
         Fetches the manifest with force_refresh=True, doubling as an auth/connectivity probe.
+        If the manifest is corrupted, Drive is still accessible, but an explicit warning is logged.
         """
         try:
             self.get_manifest(force_refresh=True)
+            return True
+        except ManifestCorruptedError as e:
+            logger.warning(f"Google Drive is reachable, but manifest is corrupted: {e}")
             return True
         except RcloneError as e:
             if e.returncode in NOT_FOUND_CODES:
@@ -293,47 +313,70 @@ class DriveClient:
         """Fetch cloud manifest if it exists.
         
         Returns None if remote file does not exist (exit code 3 or 4).
-        Raises RcloneError if network, auth, timeout, or JSON corruption occurred.
+        Raises ManifestCorruptedError if remote manifest has invalid or corrupted JSON.
+        Raises RcloneError if network, auth, or timeout occurred.
         Caches manifest for 15s to avoid redundant round-trips within the same sync cycle.
         """
-        now = time.time()
-        if not force_refresh and self._cached_manifest_time and (now - self._cached_manifest_time < 15.0):
-            return self._cached_manifest
+        with self._manifest_lock:
+            now = time.time()
+            if not force_refresh and self._cached_manifest_time and (now - self._cached_manifest_time < 15.0):
+                return self._cached_manifest
 
-        remote_path = f"{self.remote_base}/manifest.json"
+            remote_path = f"{self.remote_base}/manifest.json"
+            try:
+                output = self.run_cmd(["cat", remote_path], timeout=60, log_errors=False)
+                data = json.loads(output)
+                manifest = SyncManifest.from_dict(data)
+                self._cached_manifest = manifest
+                self._cached_manifest_time = now
+                return manifest
+            except RcloneError as e:
+                if e.returncode in NOT_FOUND_CODES:
+                    self._cached_manifest = None
+                    self._cached_manifest_time = now
+                    return None
+                raise
+            except json.JSONDecodeError as e:
+                logger.error(f"Corrupted remote manifest.json: {e}")
+                raise ManifestCorruptedError(f"Corrupted remote manifest.json: {e}") from e
+            except Exception as e:
+                if not isinstance(e, RcloneError):
+                    logger.error(f"Corrupted remote manifest.json: {e}")
+                    raise ManifestCorruptedError(f"Corrupted remote manifest.json: {e}") from e
+                raise
+
+    def get_manifest_backup(self) -> Optional[SyncManifest]:
+        """Fetch cloud manifest.json.bak if it exists."""
+        remote_path = f"{self.remote_base}/manifest.json.bak"
         try:
             output = self.run_cmd(["cat", remote_path], timeout=60, log_errors=False)
             data = json.loads(output)
-            manifest = SyncManifest.from_dict(data)
-            self._cached_manifest = manifest
-            self._cached_manifest_time = now
-            return manifest
-        except RcloneError as e:
-            if e.returncode in NOT_FOUND_CODES:
-                self._cached_manifest = None
-                self._cached_manifest_time = now
-                return None
-            raise
-        except json.JSONDecodeError as e:
-            logger.error(f"Corrupted remote manifest.json: {e}")
-            raise RcloneError(f"Corrupted remote manifest.json: {e}") from e
+            return SyncManifest.from_dict(data)
+        except Exception:
+            return None
 
     def put_manifest(self, manifest: SyncManifest) -> None:
-        """Upload sync manifest to Google Drive."""
-        remote_path = f"{self.remote_base}/manifest.json"
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".json") as f:
-            json.dump(manifest.to_dict(), f, indent=2)
-            tmp_path = Path(f.name)
-        try:
-            self.run_cmd(["copyto", str(tmp_path), remote_path], timeout=60)
-            self._cached_manifest = manifest
-            self._cached_manifest_time = time.time()
-            logger.info(f"Updated remote manifest (last_device={manifest.last_device}, epoch={manifest.epoch})")
-        finally:
+        """Upload sync manifest to Google Drive, maintaining a safety .bak on remote."""
+        with self._manifest_lock:
+            remote_path = f"{self.remote_base}/manifest.json"
+            remote_bak = f"{self.remote_base}/manifest.json.bak"
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".json") as f:
+                json.dump(manifest.to_dict(), f, indent=2)
+                tmp_path = Path(f.name)
             try:
-                tmp_path.unlink()
-            except Exception:
-                pass
+                self.run_cmd(["copyto", str(tmp_path), remote_path], timeout=60)
+                try:
+                    self.run_cmd(["copyto", str(tmp_path), remote_bak], timeout=60, log_errors=False)
+                except Exception as bak_err:
+                    logger.debug(f"Could not update remote manifest backup: {bak_err}")
+                self._cached_manifest = manifest
+                self._cached_manifest_time = time.time()
+                logger.info(f"Updated remote manifest (last_device={manifest.last_device}, epoch={manifest.epoch})")
+            finally:
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
 
     def pull_summaries(self, local_staging_path: Path) -> bool:
         """Download remote conversation_summaries.db to local staging file."""
@@ -356,12 +399,17 @@ class DriveClient:
         self.run_cmd(["copyto", str(local_db_path), remote_file] + RCLONE_PERF_FLAGS, timeout=120)
         logger.info("Uploaded conversation_summaries.db to Google Drive")
 
-    def pull_conversations(self, local_conversations_dir: Path, progress_cb: Optional[Callable[[str], None]] = None) -> None:
+    def pull_conversations(
+        self,
+        local_conversations_dir: Path,
+        progress_cb: Optional[Callable[[str], None]] = None,
+        sync_full_brain: bool = False,
+    ) -> None:
         """Download new/updated conversation session databases from remote."""
         local_conversations_dir.mkdir(parents=True, exist_ok=True)
         remote_dir = f"{self.remote_base}/conversations"
         args = ["copy", remote_dir, str(local_conversations_dir), "--update", "--fast-list"] + RCLONE_PERF_FLAGS
-        for pat in EXCLUDE_PATTERNS:
+        for pat in get_exclude_patterns(sync_full_brain=sync_full_brain):
             args.extend(["--exclude", pat])
         try:
             self.run_cmd_streaming(args, progress_cb=progress_cb, timeout=600, log_errors=False)
@@ -371,22 +419,32 @@ class DriveClient:
             else:
                 raise
 
-    def push_conversations(self, local_conversations_dir: Path, progress_cb: Optional[Callable[[str], None]] = None) -> None:
+    def push_conversations(
+        self,
+        local_conversations_dir: Path,
+        progress_cb: Optional[Callable[[str], None]] = None,
+        sync_full_brain: bool = False,
+    ) -> None:
         """Upload new/updated conversation session databases to remote."""
         if not local_conversations_dir.is_dir():
             return
         remote_dir = f"{self.remote_base}/conversations"
         args = ["copy", str(local_conversations_dir), remote_dir, "--update", "--fast-list"] + RCLONE_PERF_FLAGS
-        for pat in EXCLUDE_PATTERNS:
+        for pat in get_exclude_patterns(sync_full_brain=sync_full_brain):
             args.extend(["--exclude", pat])
         self.run_cmd_streaming(args, progress_cb=progress_cb, timeout=600)
 
-    def pull_brain(self, local_brain_dir: Path, progress_cb: Optional[Callable[[str], None]] = None) -> None:
+    def pull_brain(
+        self,
+        local_brain_dir: Path,
+        progress_cb: Optional[Callable[[str], None]] = None,
+        sync_full_brain: bool = False,
+    ) -> None:
         """Download new/updated brain artifacts and transcripts from remote."""
         local_brain_dir.mkdir(parents=True, exist_ok=True)
         remote_dir = f"{self.remote_base}/brain"
         args = ["copy", remote_dir, str(local_brain_dir), "--update", "--fast-list"] + RCLONE_PERF_FLAGS
-        for pat in EXCLUDE_PATTERNS:
+        for pat in get_exclude_patterns(sync_full_brain=sync_full_brain):
             args.extend(["--exclude", pat])
         try:
             self.run_cmd_streaming(args, progress_cb=progress_cb, timeout=600, log_errors=False)
@@ -396,13 +454,18 @@ class DriveClient:
             else:
                 raise
 
-    def push_brain(self, local_brain_dir: Path, progress_cb: Optional[Callable[[str], None]] = None) -> None:
+    def push_brain(
+        self,
+        local_brain_dir: Path,
+        progress_cb: Optional[Callable[[str], None]] = None,
+        sync_full_brain: bool = False,
+    ) -> None:
         """Upload new/updated brain artifacts and transcripts to remote."""
         if not local_brain_dir.is_dir():
             return
         remote_dir = f"{self.remote_base}/brain"
         args = ["copy", str(local_brain_dir), remote_dir, "--update", "--fast-list"] + RCLONE_PERF_FLAGS
-        for pat in EXCLUDE_PATTERNS:
+        for pat in get_exclude_patterns(sync_full_brain=sync_full_brain):
             args.extend(["--exclude", pat])
         self.run_cmd_streaming(args, progress_cb=progress_cb, timeout=600)
 

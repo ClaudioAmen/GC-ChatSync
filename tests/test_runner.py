@@ -12,8 +12,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 from gc_chatsync.config import AppConfig
-from gc_chatsync.drive import SyncManifest
-from gc_chatsync.lock import clear_session_dirty
+from gc_chatsync.drive import RcloneError, SyncManifest
+from gc_chatsync.lock import clear_session_dirty, is_session_dirty
+from gc_chatsync.merger import DatabaseMergeError
 from gc_chatsync.runner import SyncRunner
 
 
@@ -232,6 +233,186 @@ class TestSyncRunner(unittest.TestCase):
         code = runner.run()
         # When Antigravity exited with 0 but push was postponed/failed, run returns code 2
         self.assertEqual(code, 2)
+
+    @patch("gc_chatsync.runner.is_antigravity_process_running", return_value=False)
+    @patch("gc_chatsync.drive.DriveClient.test_connection", return_value=True)
+    def test_push_network_error_returns_false_without_raising(self, mock_conn, mock_running):
+        runner = SyncRunner(self.cfg)
+        with patch.object(runner.drive, "get_manifest", return_value=None), \
+             patch.object(runner.drive, "push_brain", side_effect=RcloneError("Connection reset by peer")), \
+             patch("gc_chatsync.merger.snapshot_db", return_value=True):
+            success = runner.push(force=True)
+            self.assertFalse(success)
+
+    @patch("gc_chatsync.runner.SyncRunner.pull", side_effect=RcloneError("Connection timed out"))
+    @patch("gc_chatsync.runner.SyncRunner.launch_app", return_value=0)
+    @patch("gc_chatsync.runner.SyncRunner.push")
+    def test_pull_failure_rclone_error_runs_offline_and_skips_push(
+        self, mock_push, mock_launch, mock_pull
+    ):
+        runner = SyncRunner(self.cfg)
+        code = runner.run()
+
+        self.assertEqual(code, 0)
+        mock_launch.assert_called_once_with(None, enable_heartbeat=False)
+        mock_push.assert_not_called()
+        self.assertTrue(is_session_dirty())
+
+    @patch("gc_chatsync.runner.SyncRunner.pull", side_effect=DatabaseMergeError("Incompatible schema"))
+    @patch("gc_chatsync.runner.SyncRunner.launch_app")
+    @patch("gc_chatsync.runner.SyncRunner.push")
+    def test_pull_failure_database_merge_error_aborts_launch(
+        self, mock_push, mock_launch, mock_pull
+    ):
+        runner = SyncRunner(self.cfg)
+        code = runner.run()
+
+        self.assertEqual(code, 1)
+        mock_launch.assert_not_called()
+        mock_push.assert_not_called()
+
+    @patch("gc_chatsync.runner.is_antigravity_process_running", return_value=False)
+    @patch("gc_chatsync.drive.DriveClient.test_connection", return_value=True)
+    def test_push_uploads_data_first_and_manifest_strictly_last(self, mock_conn, mock_running):
+        runner = SyncRunner(self.cfg)
+        conv_dir = self.data_dir / "conversations"
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        (conv_dir / "session1.db").touch()
+        (self.data_dir / "conversation_summaries.db").touch()
+        (self.data_dir / "brain").mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "projects").mkdir(parents=True, exist_ok=True)
+
+        call_order = []
+
+        def track(name):
+            def _fn(*args, **kwargs):
+                call_order.append(name)
+            return _fn
+
+        with patch.object(runner.drive, "push_conversations", side_effect=track("conv")), \
+             patch.object(runner.drive, "push_brain", side_effect=track("brain")), \
+             patch.object(runner.drive, "push_projects", side_effect=track("projects")), \
+             patch.object(runner.drive, "push_summaries", side_effect=track("summaries")), \
+             patch.object(runner.drive, "put_manifest", side_effect=track("manifest")), \
+             patch("gc_chatsync.merger.snapshot_db", return_value=True):
+            success = runner.push(force=True, full=True)
+            self.assertTrue(success)
+
+        self.assertIn("manifest", call_order)
+        self.assertEqual(call_order[-1], "manifest")
+        self.assertIn("conv", call_order[:-1])
+        self.assertIn("brain", call_order[:-1])
+        self.assertIn("summaries", call_order[:-1])
+
+    @patch("gc_chatsync.runner.is_antigravity_process_running", return_value=False)
+    @patch("gc_chatsync.drive.DriveClient.test_connection", return_value=True)
+    @patch("gc_chatsync.runner.get_last_push_timestamp", return_value=999999.0)
+    @patch("gc_chatsync.merger.needs_db_snapshot")
+    def test_push_full_resets_last_push_timestamp(self, mock_needs, mock_ts, mock_conn, mock_running):
+        runner = SyncRunner(self.cfg)
+        conv_dir = self.data_dir / "conversations"
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        (conv_dir / "conv_a.db").touch()
+
+        with patch.object(runner.drive, "push_conversations"), \
+             patch.object(runner.drive, "push_brain"), \
+             patch.object(runner.drive, "push_projects"), \
+             patch.object(runner.drive, "push_summaries"), \
+             patch.object(runner.drive, "put_manifest"), \
+             patch("gc_chatsync.merger.snapshot_db", return_value=True):
+            runner.push(force=True, full=True)
+
+        mock_needs.assert_called_with(conv_dir / "conv_a.db", 0.0)
+
+    @patch("gc_chatsync.runner.is_antigravity_process_running", return_value=False)
+    @patch("subprocess.Popen")
+    def test_launch_app_joins_heartbeat_thread_on_exit(self, mock_popen, mock_running):
+        mock_proc = mock_popen.return_value
+        mock_proc.wait.return_value = 0
+        mock_proc.returncode = 0
+
+        fake_bin = self.tmp_path / "fake_antigravity"
+        fake_bin.touch()
+
+        runner = SyncRunner(self.cfg)
+        runner.config.antigravity_bin_path = str(fake_bin)
+
+        with patch("threading.Thread") as mock_thread_cls:
+            mock_th = MagicMock()
+            mock_thread_cls.return_value = mock_th
+            mock_th.is_alive.return_value = True
+
+            code = runner.launch_app(enable_heartbeat=True)
+            self.assertEqual(code, 0)
+            mock_th.start.assert_called_once()
+            mock_th.join.assert_called_once_with(timeout=5.0)
+
+    @patch("gc_chatsync.runner.is_antigravity_process_running", return_value=False)
+    @patch("subprocess.Popen")
+    def test_launch_app_offline_does_not_start_heartbeat(self, mock_popen, mock_running):
+        mock_proc = mock_popen.return_value
+        mock_proc.wait.return_value = 0
+        mock_proc.returncode = 0
+
+        fake_bin = self.tmp_path / "fake_antigravity"
+        fake_bin.touch()
+
+        runner = SyncRunner(self.cfg)
+        runner.config.antigravity_bin_path = str(fake_bin)
+
+        with patch("threading.Thread") as mock_thread_cls:
+            mock_th = MagicMock()
+            mock_thread_cls.return_value = mock_th
+
+            code = runner.launch_app(enable_heartbeat=False)
+            self.assertEqual(code, 0)
+            mock_th.start.assert_not_called()
+
+    def test_heartbeat_updates_only_matching_device_and_epoch(self):
+        runner = SyncRunner(self.cfg)
+        manifest_matching = SyncManifest(
+            last_device="other",
+            last_sync_utc="2026-10-28T12:00:00Z",
+            epoch=2,
+            active_device="test-laptop",
+            active_since_utc="2026-10-28T12:00:00Z",
+        )
+
+        with patch.object(runner.drive, "get_manifest", return_value=manifest_matching), \
+             patch.object(runner.drive, "put_manifest") as mock_put:
+            res = runner._run_heartbeat_step(session_epoch=2)
+            self.assertTrue(res)
+            self.assertTrue(mock_put.called)
+            saved = mock_put.call_args[0][0]
+            self.assertIsNotNone(saved.active_heartbeat_utc)
+
+        # Case 2: active_device belongs to a different device
+        manifest_other = SyncManifest(
+            last_device="other",
+            last_sync_utc="2026-10-28T12:00:00Z",
+            epoch=2,
+            active_device="windows-desktop",
+            active_since_utc="2026-10-28T12:00:00Z",
+        )
+        with patch.object(runner.drive, "get_manifest", return_value=manifest_other), \
+             patch.object(runner.drive, "put_manifest") as mock_put:
+            res = runner._run_heartbeat_step(session_epoch=2)
+            self.assertFalse(res)
+            mock_put.assert_not_called()
+
+        # Case 3: epoch changed in cloud during session
+        manifest_new_epoch = SyncManifest(
+            last_device="test-laptop",
+            last_sync_utc="2026-10-28T12:00:00Z",
+            epoch=3,
+            active_device="test-laptop",
+            active_since_utc="2026-10-28T12:00:00Z",
+        )
+        with patch.object(runner.drive, "get_manifest", return_value=manifest_new_epoch), \
+             patch.object(runner.drive, "put_manifest") as mock_put:
+            res = runner._run_heartbeat_step(session_epoch=2)
+            self.assertFalse(res)
+            mock_put.assert_not_called()
 
 
 if __name__ == "__main__":

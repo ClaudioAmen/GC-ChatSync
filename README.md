@@ -87,31 +87,34 @@ gc-chatsync install-shortcut             # Hooks habitual Antigravity icon
 gc-chatsync install-shortcut --standalone # Or creates a separate desktop icon
 
 # CLI Lifecycle & Manual Sync
-gc-chatsync run      # Full lifecycle: Pull -> Launch -> Push on exit
-gc-chatsync pull     # Pull and merge cloud deltas
-gc-chatsync push     # Push local sessions to cloud
-gc-chatsync status   # View cloud alignment and active device
+gc-chatsync run              # Full lifecycle: Pull -> Launch -> Push on exit
+gc-chatsync pull             # Pull and merge cloud deltas
+gc-chatsync push             # Push local sessions to cloud
+gc-chatsync push --full      # Force full snapshot and upload of all databases
+gc-chatsync status           # View cloud alignment and active device
 
 # Maintenance & Recovery
-gc-chatsync reconcile       # 🩺 Diagnose & auto-repair orphaned/unindexed sessions
-gc-chatsync restore-backup  # ⏪ Revert index to the latest pre-merge snapshot
+gc-chatsync doctor           # 🩺 Diagnose & auto-repair orphaned/unindexed sessions
+gc-chatsync doctor --repair-manifest # Repair or reconstruct corrupted manifest.json
+gc-chatsync restore-backup   # ⏪ Revert index to the latest pre-merge snapshot
 ```
 
 ---
 
 ## 🛠️ How It Works
 
-1. **Before Launch (PULL):** Inspects the cloud manifest. If updates exist, downloads deltas via `rclone`, creates an atomic SQLite backup, and merges `conversation_summaries.db` incrementally.
-2. **Execution:** Launches Antigravity. (If offline, launches in safe local mode and suppresses the push on exit).
-3. **On Close (PUSH):** Checkpoints SQLite WAL journals, takes crash-safe database snapshots, uploads new sessions and brain artifacts to Drive, and increments the revision epoch.
+1. **Before Launch (PULL):** Inspects the cloud manifest. If updates exist, downloads deltas via `rclone` (using 4 parallel workers), creates an atomic SQLite backup, and merges `conversation_summaries.db` incrementally.
+2. **Execution:** Launches Antigravity and runs an epoch-guarded witness heartbeat thread. (If offline, launches in safe local mode, marks the session dirty for subsequent recovery, and suppresses the push on exit).
+3. **On Close (PUSH):** Checkpoints SQLite WAL journals, takes crash-safe database snapshots, uploads modified sessions and brain artifacts to Drive, updates the manifest revision epoch, and clears the dirty flag.
 
 ---
 
 ## ⚠️ Known Limitations
 
-- **Google Drive API Latency:** GC-ChatSync synchronizes via official Google Drive REST APIs. Brief operational pauses (typically 2–5 seconds during startup checks or post-exit pushes) are normal due to network round-trips and Google's per-user rate limits (~10 req/s). Concurrency flags (`--transfers 2`, `--checkers 2`, 32MB chunks) are tuned to operate smoothly below throttling limits.
+- **Google Drive API Latency:** GC-ChatSync synchronizes via official Google Drive REST APIs. High-level timing breakdowns are logged at `INFO` level (e.g., `Pull completed in 3.42s`, `Push completed in 2.10s`). Operations are tuned using high-throughput flags (`--transfers 8`, `--checkers 16`, 64MB chunks, and pacer sleep 10ms) powered by your dedicated Google Cloud project credentials.
 - **Non-Destructive Deletions:** To protect your history against accidental data loss, conversations removed locally are not deleted from Google Drive.
-- **Offline Mode Safety:** When offline, Antigravity launches normally in local mode; the post-exit push is automatically suppressed to prevent overwriting cloud history.
+- **Offline Mode Safety:** When offline, Antigravity launches normally in local mode; the post-exit push is automatically suppressed to prevent overwriting cloud history. Local changes are tracked as dirty and will automatically synchronize on the next online launch.
+- **Full Brain Sync Option:** By default, transient execution outputs (`steps/`, `tasks/`, `messages/`, `subagents/`) are omitted to keep transfers lightweight. If you wish to sync every step and task directory, enable `"sync_full_brain": true` in `config.json`.
 - **Antigravity Updates:** Official Antigravity updates may overwrite the application desktop file or shortcut. Simply run `gc-chatsync install-shortcut` again to restore the sync hook.
 
 ---

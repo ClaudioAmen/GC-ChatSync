@@ -22,8 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from gc_chatsync.config import AppConfig
-from gc_chatsync.drive import DriveClient, NOT_FOUND_CODES, SyncManifest
+from gc_chatsync.config import AppConfig, get_antigravity_version
+from gc_chatsync.drive import DriveClient, NOT_FOUND_CODES, SyncManifest, ManifestCorruptedError
 from gc_chatsync.merger import checkpoint_db, create_backup, get_table_columns
 from gc_chatsync.runner import SyncRunner, is_antigravity_process_running
 
@@ -39,6 +39,7 @@ class ReconcileReport:
     orphans_indexed: int = 0
     corrupt_files: List[str] = field(default_factory=list)
     stale_witness_cleared: bool = False
+    manifest_repaired: bool = False
     remote_audited: bool = False
     remote_synced: int = 0
     errors: List[str] = field(default_factory=list)
@@ -107,6 +108,7 @@ def extract_session_preview(db_path: Path) -> Tuple[str, str, str]:
 def run_reconcile(
     runner: SyncRunner,
     progress_cb: Optional[Callable[[int, str], None]] = None,
+    repair_manifest: bool = False,
 ) -> ReconcileReport:
     """Execute the full Doctor reconciliation workflow."""
     def report(pct: int, msg: str):
@@ -223,11 +225,39 @@ def run_reconcile(
             rep.warnings.append(f"Local indexing encountered error: {e}")
             logger.warning(f"Error during orphan reconciliation: {e}")
 
-    # 4. Check & Release Stale Cloud Witness Lock (> 15 minutes)
-    report(65, "Checking Google Drive witness locks...")
+    # 4. Check Cloud Manifest Integrity & Release Stale Cloud Witness Lock (> 15 minutes)
+    report(65, "Checking Google Drive witness locks and manifest integrity...")
     try:
         if runner.drive.test_connection():
-            manifest = runner.drive.get_manifest()
+            manifest = None
+            is_corrupted = False
+            try:
+                manifest = runner.drive.get_manifest(force_refresh=True)
+            except ManifestCorruptedError as e:
+                is_corrupted = True
+                rep.warnings.append(f"Remote manifest is corrupted: {e}")
+
+            if (is_corrupted or repair_manifest) and (manifest is None or is_corrupted):
+                report(68, "Attempting manifest repair/reconstruction...")
+                bak = runner.drive.get_manifest_backup()
+                if bak:
+                    runner.drive.put_manifest(bak)
+                    manifest = bak
+                    rep.manifest_repaired = True
+                    rep.details.append(f"Restored corrupted manifest from remote backup (.bak) with epoch {bak.epoch}.")
+                    report(70, f"Restored manifest from remote backup (epoch {bak.epoch}).")
+                else:
+                    reconstructed = SyncManifest.create_now(
+                        device_id=runner.config.device_id,
+                        epoch=1,
+                        antigravity_version=get_antigravity_version(runner.config.antigravity_bin_path) if runner.config.antigravity_bin_path else None,
+                    )
+                    runner.drive.put_manifest(reconstructed)
+                    manifest = reconstructed
+                    rep.manifest_repaired = True
+                    rep.details.append("Remote manifest missing or unrecoverable from .bak; initialized fresh manifest (epoch 1).")
+                    report(70, "Reconstructed clean manifest (epoch 1).")
+
             if manifest and manifest.active_device:
                 is_stale = False
                 ref_time_str = manifest.active_heartbeat_utc or manifest.active_since_utc
@@ -300,7 +330,7 @@ def _log_reconcile_report(report: ReconcileReport) -> None:
             f"=== Reconcile Report: {timestamp} (Status: {report.status}, Code: {report.code}) ===",
             f"Orphans Found: {report.orphans_found} | Orphans Indexed: {report.orphans_indexed}",
             f"Corrupt Files: {len(report.corrupt_files)} | Stale Witness Cleared: {report.stale_witness_cleared}",
-            f"Remote Audited: {report.remote_audited} | Remote Files Pulled: {report.remote_synced}",
+            f"Manifest Repaired: {report.manifest_repaired} | Remote Audited: {report.remote_audited} | Remote Files Pulled: {report.remote_synced}",
         ]
         if report.errors:
             lines.append("Errors:")

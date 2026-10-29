@@ -30,13 +30,23 @@ class TestCLI(unittest.TestCase):
         args_push = parser.parse_args(["push"])
         self.assertEqual(args_push.command, "push")
         self.assertFalse(args_push.force)
+        self.assertFalse(args_push.full)
 
-        args_push_force = parser.parse_args(["push", "--force"])
+        args_push_force = parser.parse_args(["push", "--force", "--full"])
         self.assertEqual(args_push_force.command, "push")
         self.assertTrue(args_push_force.force)
+        self.assertTrue(args_push_force.full)
 
         args_status = parser.parse_args(["status"])
         self.assertEqual(args_status.command, "status")
+
+        args_rec = parser.parse_args(["reconcile", "--repair-manifest"])
+        self.assertEqual(args_rec.command, "reconcile")
+        self.assertTrue(args_rec.repair_manifest)
+
+        args_doc = parser.parse_args(["doctor", "--repair-manifest"])
+        self.assertEqual(args_doc.command, "doctor")
+        self.assertTrue(args_doc.repair_manifest)
 
         args_sc = parser.parse_args(["install-shortcut", "--standalone"])
         self.assertEqual(args_sc.command, "install-shortcut")

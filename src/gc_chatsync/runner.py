@@ -221,6 +221,7 @@ class SyncRunner:
                     pass
 
         with ProcessLock():
+            pull_perf_start = time.perf_counter()
             report(10, "Verifying Google Drive connection...")
             logger.info("Checking Google Drive status...")
             if not self.drive.test_connection():
@@ -266,9 +267,20 @@ class SyncRunner:
                 def on_brain_pull(sub_msg: str):
                     report(60, f"[Brain] {sub_msg}")
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    f_conv = executor.submit(self.drive.pull_conversations, conv_dir, on_conv_pull)
-                    f_brain = executor.submit(self.drive.pull_brain, brain_dir, on_brain_pull)
+                t0_pull = time.perf_counter()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                    f_conv = executor.submit(
+                        self.drive.pull_conversations,
+                        conv_dir,
+                        on_conv_pull,
+                        sync_full_brain=self.config.sync_full_brain,
+                    )
+                    f_brain = executor.submit(
+                        self.drive.pull_brain,
+                        brain_dir,
+                        on_brain_pull,
+                        sync_full_brain=self.config.sync_full_brain,
+                    )
                     f_proj = executor.submit(self.drive.pull_projects, remote_projects_staging)
                     f_sum = executor.submit(self.drive.pull_summaries, remote_db_staging)
 
@@ -276,6 +288,7 @@ class SyncRunner:
                     f_brain.result()
                     f_proj.result()
                     has_remote_db = f_sum.result()
+                t_pull = time.perf_counter() - t0_pull
 
                 report(75, "Translating project definitions...")
                 if remote_projects_staging.is_dir():
@@ -307,6 +320,8 @@ class SyncRunner:
                 else:
                     logger.info("No remote conversation_summaries.db found on Drive.")
 
+            total_pull_time = time.perf_counter() - pull_perf_start
+            logger.info(f"Pull completed in {total_pull_time:.2f}s (cloud download: {t_pull:.2f}s).")
             report(100, "Synchronization completed successfully!")
             return True
 
@@ -341,11 +356,13 @@ class SyncRunner:
         self,
         progress_cb: Optional[Callable[[int, str], None]] = None,
         force: bool = False,
+        full: bool = False,
     ) -> bool:
         """Push local conversations, projects, and merged index to Google Drive.
         
         Protected by ProcessLock. Updates monotonic epoch and clears dirty session flag.
         If force=True, skips active Antigravity process checks (DB lock checks remain active).
+        If full=True, snapshots and uploads all conversation databases regardless of timestamps.
         """
         def report(pct: int, msg: str) -> None:
             if progress_cb and callable(progress_cb):
@@ -355,6 +372,7 @@ class SyncRunner:
                     pass
 
         with ProcessLock():
+            push_perf_start = time.perf_counter()
             report(10, "Verifying Google Drive connection...")
             logger.info("Connecting to Google Drive for push...")
             if not self.drive.test_connection():
@@ -366,7 +384,17 @@ class SyncRunner:
                 logger.warning("Antigravity process is still running. Postponing push to protect database integrity.")
                 return False
 
+            existing_manifest = None
+            try:
+                existing_manifest = self.drive.get_manifest()
+            except Exception as e:
+                logger.warning(f"Failed to read existing manifest for epoch check: {e}")
+
             last_push_ts = get_last_push_timestamp()
+            if full or existing_manifest is None or existing_manifest.epoch <= 0:
+                logger.info("Full push requested or cloud storage clean/reset. Snapshotting all databases.")
+                last_push_ts = 0.0
+
             push_start_time = time.time()
 
             # Verify that databases are not locked by background processes
@@ -375,93 +403,141 @@ class SyncRunner:
                 return False
 
             report(25, "Creating isolated database snapshots...")
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tmp_path = Path(tmp_dir)
+            try:
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    tmp_path = Path(tmp_dir)
 
-                # 1. Snapshot summaries database
-                local_db = self.data_dir / "conversation_summaries.db"
-                staged_summaries_db = None
-                if local_db.is_file():
-                    staged_summaries_db = tmp_path / "conversation_summaries.db"
-                    if not snapshot_db(local_db, staged_summaries_db):
-                        logger.warning("Could not snapshot conversation_summaries.db. Postponing push.")
-                        return False
+                    # 1. Snapshot summaries database
+                    local_db = self.data_dir / "conversation_summaries.db"
+                    staged_summaries_db = None
+                    if local_db.is_file():
+                        staged_summaries_db = tmp_path / "conversation_summaries.db"
+                        if not snapshot_db(local_db, staged_summaries_db):
+                            logger.warning("Could not snapshot conversation_summaries.db. Postponing push.")
+                            return False
 
-                # 2. Snapshot only modified conversation databases (or all on first run)
-                conv_dir = self.data_dir / "conversations"
-                staged_conv_dir = tmp_path / "conversations"
-                modified_convs = 0
-                if conv_dir.is_dir():
-                    staged_conv_dir.mkdir(parents=True, exist_ok=True)
-                    for db_file in conv_dir.glob("*.db"):
-                        if needs_db_snapshot(db_file, last_push_ts):
-                            target_snap = staged_conv_dir / db_file.name
-                            if not snapshot_db(db_file, target_snap):
-                                logger.warning(f"Could not snapshot {db_file.name}. Postponing push.")
-                                return False
-                            modified_convs += 1
+                    # 2. Snapshot only modified conversation databases (or all on first run)
+                    conv_dir = self.data_dir / "conversations"
+                    staged_conv_dir = tmp_path / "conversations"
+                    modified_convs = 0
+                    if conv_dir.is_dir():
+                        staged_conv_dir.mkdir(parents=True, exist_ok=True)
+                        for db_file in conv_dir.glob("*.db"):
+                            if needs_db_snapshot(db_file, last_push_ts):
+                                target_snap = staged_conv_dir / db_file.name
+                                if not snapshot_db(db_file, target_snap):
+                                    logger.warning(f"Could not snapshot {db_file.name}. Postponing push.")
+                                    return False
+                                modified_convs += 1
 
-                report(50, "Uploading conversations, brain artifacts, and projects...")
-                brain_dir = self.data_dir / "brain"
-                logger.info(
-                    "Uploading changes concurrently (modified conversations: %d)...",
-                    modified_convs,
+                    report(50, "Uploading conversations, brain artifacts, and projects...")
+                    brain_dir = self.data_dir / "brain"
+                    logger.info(
+                        "Uploading changes concurrently (modified conversations: %d)...",
+                        modified_convs,
+                    )
+
+                    def on_conv_push(sub_msg: str):
+                        report(60, f"[Upload Conversations] {sub_msg}")
+
+                    def on_brain_push(sub_msg: str):
+                        report(75, f"[Upload Brain] {sub_msg}")
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                        futures = []
+                        if staged_conv_dir.is_dir() and modified_convs > 0:
+                            futures.append(
+                                executor.submit(
+                                    self.drive.push_conversations,
+                                    staged_conv_dir,
+                                    on_conv_push,
+                                    sync_full_brain=self.config.sync_full_brain,
+                                )
+                            )
+                        if brain_dir.is_dir():
+                            futures.append(
+                                executor.submit(
+                                    self.drive.push_brain,
+                                    brain_dir,
+                                    on_brain_push,
+                                    sync_full_brain=self.config.sync_full_brain,
+                                )
+                            )
+                        if self.projects_dir.is_dir():
+                            futures.append(executor.submit(self.drive.push_projects, self.projects_dir))
+
+                        for fut in concurrent.futures.as_completed(futures):
+                            fut.result()
+
+                    # 3. Upload summaries database from clean snapshot
+                    report(85, "Uploading conversation_summaries.db index...")
+                    if staged_summaries_db and staged_summaries_db.is_file():
+                        logger.info("Uploading conversation_summaries.db from snapshot...")
+                        self.drive.push_summaries(staged_summaries_db)
+
+                    # 4. Update cloud manifest token with incremented epoch and release active witness
+                    report(95, "Updating state token on Google Drive...")
+                    if existing_manifest is None:
+                        try:
+                            existing_manifest = self.drive.get_manifest()
+                        except Exception as e:
+                            logger.warning(f"Failed to read existing manifest for epoch bump ({e}), proceeding with fallback.")
+
+                    next_epoch = (existing_manifest.epoch + 1) if existing_manifest else 1
+                    new_manifest = SyncManifest.create_now(
+                        self.config.device_id,
+                        epoch=next_epoch,
+                        active_device=None,
+                        active_since_utc=None,
+                        active_heartbeat_utc=None,
+                        antigravity_version=get_antigravity_version(self.config.antigravity_bin_path),
+                    )
+                    self.drive.put_manifest(new_manifest)
+
+                    # 5. Persist push timestamp and clear dirty state flag
+                    set_last_push_timestamp(push_start_time)
+                    clear_session_dirty()
+                    total_push_time = time.perf_counter() - push_perf_start
+                    logger.info(
+                        f"Sync complete! State updated to '{self.config.device_id}' (epoch {next_epoch}) "
+                        f"in {total_push_time:.2f}s (modified conversations: {modified_convs})."
+                    )
+                    report(100, "Upload completed successfully!")
+                    return True
+            except (RcloneError, OSError, subprocess.SubprocessError) as push_err:
+                logger.warning(f"Push could not complete due to network or transfer error: {push_err}")
+                report(0, f"Push postponed: {push_err}")
+                return False
+
+    def _run_heartbeat_step(self, session_epoch: Optional[int]) -> bool:
+        """Execute one heartbeat cycle. Returns True on success, False if preempted or error occurred."""
+        try:
+            m = self.drive.get_manifest(force_refresh=True)
+            if not m:
+                return False
+            if m.active_device != self.config.device_id:
+                logger.debug(
+                    f"Witness active_device is '{m.active_device}', not '{self.config.device_id}'. Stopping heartbeat."
                 )
-
-                def on_conv_push(sub_msg: str):
-                    report(60, f"[Upload Conversations] {sub_msg}")
-
-                def on_brain_push(sub_msg: str):
-                    report(75, f"[Upload Brain] {sub_msg}")
-
-                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                    futures = []
-                    if staged_conv_dir.is_dir() and modified_convs > 0:
-                        futures.append(executor.submit(self.drive.push_conversations, staged_conv_dir, on_conv_push))
-                    if brain_dir.is_dir():
-                        futures.append(executor.submit(self.drive.push_brain, brain_dir, on_brain_push))
-                    if self.projects_dir.is_dir():
-                        futures.append(executor.submit(self.drive.push_projects, self.projects_dir))
-
-                    for fut in concurrent.futures.as_completed(futures):
-                        fut.result()
-
-                # 3. Upload summaries database from clean snapshot
-                report(85, "Uploading conversation_summaries.db index...")
-                if staged_summaries_db and staged_summaries_db.is_file():
-                    logger.info("Uploading conversation_summaries.db from snapshot...")
-                    self.drive.push_summaries(staged_summaries_db)
-
-                # 4. Update cloud manifest token with incremented epoch and release active witness
-                report(95, "Updating state token on Google Drive...")
-                existing_manifest = None
-                try:
-                    existing_manifest = self.drive.get_manifest()
-                except Exception as e:
-                    logger.warning(f"Failed to read existing manifest for epoch bump ({e}), proceeding with fallback.")
-
-                next_epoch = (existing_manifest.epoch + 1) if existing_manifest else 1
-                new_manifest = SyncManifest.create_now(
-                    self.config.device_id,
-                    epoch=next_epoch,
-                    active_device=None,
-                    active_since_utc=None,
-                    active_heartbeat_utc=None,
-                    antigravity_version=get_antigravity_version(self.config.antigravity_bin_path),
+                return False
+            if session_epoch is not None and m.epoch != session_epoch:
+                logger.warning(
+                    f"Manifest epoch changed during session ({m.epoch} != {session_epoch}). Stopping heartbeat."
                 )
-                self.drive.put_manifest(new_manifest)
-
-                # 5. Persist push timestamp and clear dirty state flag
-                set_last_push_timestamp(push_start_time)
-                clear_session_dirty()
-                logger.info(f"Sync complete! State updated to '{self.config.device_id}' (epoch {next_epoch}).")
-                report(100, "Upload completed successfully!")
-                return True
+                return False
+            m.active_heartbeat_utc = datetime.now(timezone.utc).isoformat()
+            self.drive.put_manifest(m)
+            logger.debug("Cloud witness heartbeat refreshed.")
+            return True
+        except Exception as hb_err:
+            logger.debug(f"Witness heartbeat error: {hb_err}")
+            return False
 
     def launch_app(
         self,
         extra_args: Optional[list[str]] = None,
         on_launched: Optional[Any] = None,
+        enable_heartbeat: bool = True,
     ) -> int:
         """Launch Antigravity executable and wait for it to exit."""
         bin_path_str = self.config.antigravity_bin_path
@@ -494,15 +570,17 @@ class SyncRunner:
         stop_heartbeat = threading.Event()
 
         def _heartbeat_worker():
+            consecutive_errors = 0
+            session_epoch = getattr(self, "_current_session_epoch", None)
             while not stop_heartbeat.wait(timeout=120):
-                try:
-                    m = self.drive.get_manifest(force_refresh=True)
-                    if m and m.active_device == self.config.device_id:
-                        m.active_heartbeat_utc = datetime.now(timezone.utc).isoformat()
-                        self.drive.put_manifest(m)
-                        logger.debug("Cloud witness heartbeat refreshed.")
-                except Exception as hb_err:
-                    logger.debug(f"Witness heartbeat error: {hb_err}")
+                success = self._run_heartbeat_step(session_epoch)
+                if success:
+                    consecutive_errors = 0
+                else:
+                    consecutive_errors += 1
+                    if consecutive_errors >= 3:
+                        logger.warning("Heartbeat encountered 3 consecutive errors; stopping worker thread.")
+                        break
 
         hb_thread = threading.Thread(target=_heartbeat_worker, daemon=True)
 
@@ -514,7 +592,8 @@ class SyncRunner:
                 except Exception as cb_err:
                     logger.debug(f"on_launched callback error: {cb_err}")
 
-            hb_thread.start()
+            if enable_heartbeat:
+                hb_thread.start()
             proc.wait()
 
             # Wait for all child and helper Antigravity processes to exit
@@ -530,6 +609,8 @@ class SyncRunner:
             return 1
         finally:
             stop_heartbeat.set()
+            if enable_heartbeat and hb_thread.is_alive():
+                hb_thread.join(timeout=5.0)
 
     def run(self, extra_args: Optional[list[str]] = None) -> int:
         """Full lifecycle: PULL -> LAUNCH -> PUSH with concurrency locking and dirty session recovery."""
@@ -565,14 +646,19 @@ class SyncRunner:
                 print("   To protect your chat history, synchronization has been stopped.")
                 print("   Please ensure Antigravity is updated to the same version on all machines.\n")
                 return 1
-            except Exception as e:
+            except (RcloneError, OSError, subprocess.SubprocessError) as e:
                 logger.warning(f"Pull could not complete ({e}). Proceeding in local mode.")
                 print(f"⚠️ [GC-ChatSync] Offline mode: could not connect to Google Drive ({e}).")
                 pull_ok = False
+            except Exception as e:
+                logger.exception(f"Unexpected error during pull: {e}")
+                print(f"\n❌ [GC-ChatSync] ABORTING: Unexpected error during sync: {e}\n")
+                return 1
 
             if not pull_ok:
+                mark_session_dirty(self.config.device_id)
                 print("🌌 [GC-ChatSync] Step 2/3: Running Antigravity (Offline mode)...")
-                exit_code = self.launch_app(extra_args)
+                exit_code = self.launch_app(extra_args, enable_heartbeat=False)
                 print("🌌 [GC-ChatSync] Offline mode: skipping cloud push to protect remote data.")
                 print("   Local changes will synchronize on the next online launch.")
                 return exit_code
@@ -601,8 +687,9 @@ class SyncRunner:
                     return 0
 
             # Claim active witness in cloud
+            curr_epoch = manifest.epoch if manifest else 1
+            self._current_session_epoch = curr_epoch
             try:
-                curr_epoch = manifest.epoch if manifest else 1
                 curr_last = manifest.last_device if manifest else ""
                 witness_manifest = SyncManifest(
                     last_device=curr_last,
@@ -632,4 +719,5 @@ class SyncRunner:
                 logger.warning("Push was postponed or failed. Local session remains dirty.")
                 print("⚠️ [GC-ChatSync] Push postponed or incomplete. Local changes are preserved.")
                 print("   They will automatically synchronize on the next online launch.")
+                return 2 if exit_code == 0 else exit_code
                 return 2 if exit_code == 0 else exit_code

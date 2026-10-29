@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from gc_chatsync.config import AppConfig
-from gc_chatsync.drive import DriveClient, SyncManifest
+from gc_chatsync.drive import DriveClient, ManifestCorruptedError, SyncManifest
 from gc_chatsync.reconcile import extract_session_preview, run_reconcile
 from gc_chatsync.runner import SyncRunner
 
@@ -163,6 +163,45 @@ class TestReconcileEngine(unittest.TestCase):
         saved_manifest = mock_put.call_args[0][0]
         self.assertIsNone(saved_manifest.active_device)
         self.assertIsNone(saved_manifest.active_since_utc)
+
+    @patch("gc_chatsync.reconcile.is_antigravity_process_running", return_value=False)
+    @patch("gc_chatsync.drive.DriveClient.test_connection", return_value=True)
+    @patch("gc_chatsync.drive.DriveClient.get_manifest", side_effect=ManifestCorruptedError("JSON error"))
+    @patch("gc_chatsync.drive.DriveClient.get_manifest_backup")
+    @patch("gc_chatsync.drive.DriveClient.put_manifest")
+    def test_reconcile_repairs_corrupted_manifest_from_backup(self, mock_put, mock_bak, mock_get, mock_conn, mock_running):
+        backup_manifest = SyncManifest(
+            last_device="backup-device",
+            last_sync_utc="2026-10-28T10:00:00Z",
+            epoch=5,
+        )
+        mock_bak.return_value = backup_manifest
+
+        runner = SyncRunner(self.cfg)
+        with patch.object(runner.drive, "run_cmd", return_value=""):
+            rep = run_reconcile(runner)
+
+        self.assertTrue(rep.manifest_repaired)
+        self.assertTrue(mock_put.called)
+        restored = mock_put.call_args[0][0]
+        self.assertEqual(restored.last_device, "backup-device")
+        self.assertEqual(restored.epoch, 5)
+
+    @patch("gc_chatsync.reconcile.is_antigravity_process_running", return_value=False)
+    @patch("gc_chatsync.drive.DriveClient.test_connection", return_value=True)
+    @patch("gc_chatsync.drive.DriveClient.get_manifest", side_effect=ManifestCorruptedError("JSON error"))
+    @patch("gc_chatsync.drive.DriveClient.get_manifest_backup", return_value=None)
+    @patch("gc_chatsync.drive.DriveClient.put_manifest")
+    def test_reconcile_reconstructs_manifest_when_no_backup(self, mock_put, mock_bak, mock_get, mock_conn, mock_running):
+        runner = SyncRunner(self.cfg)
+        with patch.object(runner.drive, "run_cmd", return_value=""):
+            rep = run_reconcile(runner, repair_manifest=True)
+
+        self.assertTrue(rep.manifest_repaired)
+        self.assertTrue(mock_put.called)
+        reconstructed = mock_put.call_args[0][0]
+        self.assertEqual(reconstructed.epoch, 1)
+        self.assertEqual(reconstructed.last_device, "test-device")
 
 
 if __name__ == "__main__":

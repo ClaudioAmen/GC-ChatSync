@@ -124,7 +124,8 @@ def cmd_push(args: argparse.Namespace) -> int:
     cfg = load_config()
     runner = SyncRunner(cfg)
     force = getattr(args, "force", False)
-    success = runner.push(force=force)
+    full = getattr(args, "full", False)
+    success = runner.push(force=force, full=full)
     return 0 if success else 1
 
 
@@ -264,6 +265,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force push, skipping active Antigravity process detection (database locks are still verified).",
     )
+    p_push.add_argument(
+        "--full",
+        action="store_true",
+        help="Force full push: snapshot and upload all databases regardless of previous push timestamps.",
+    )
 
     # Command: status
     subparsers.add_parser(
@@ -306,10 +312,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # Command: reconcile
-    subparsers.add_parser(
+    p_reconcile = subparsers.add_parser(
         "reconcile",
         parents=[common_parser],
         help="Diagnose and repair inconsistencies: index orphan sessions, clear stale locks, audit cloud.",
+    )
+    p_reconcile.add_argument(
+        "--repair-manifest",
+        action="store_true",
+        help="Restore corrupted remote manifest.json from .bak or reconstruct clean epoch token.",
+    )
+
+    # Command: doctor (alias for reconcile)
+    p_doctor = subparsers.add_parser(
+        "doctor",
+        parents=[common_parser],
+        help="Alias for 'reconcile': run health check, fix orphans, unlock stale witnesses, repair manifest.",
+    )
+    p_doctor.add_argument(
+        "--repair-manifest",
+        action="store_true",
+        help="Restore corrupted remote manifest.json from .bak or reconstruct clean epoch token.",
     )
 
     # Command: restore-backup
@@ -359,7 +382,8 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         print(f"[{pct}%] {msg}")
 
     print("🩺 Running GC-ChatSync Doctor & Reconcile...\n")
-    report = run_reconcile(runner, progress_cb=on_progress)
+    repair_manifest = getattr(args, "repair_manifest", False)
+    report = run_reconcile(runner, progress_cb=on_progress, repair_manifest=repair_manifest)
 
     print("\n" + "=" * 50)
     if report.status == "SUCCESS":
@@ -373,6 +397,7 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     print(f"• Orphans Indexed: {report.orphans_indexed} / {report.orphans_found}")
     print(f"• Corrupt Files: {len(report.corrupt_files)}")
     print(f"• Stale Witness Cleared: {report.stale_witness_cleared}")
+    print(f"• Manifest Repaired: {report.manifest_repaired}")
     print(f"• Remote Conversations Synced: {report.remote_synced}")
 
     if report.warnings:
@@ -436,6 +461,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "install-shortcut": _cmd_install_shortcut,
         "restore-shortcut": _cmd_restore_shortcut,
         "reconcile": _cmd_reconcile,
+        "doctor": _cmd_reconcile,
         "restore-backup": _cmd_restore_backup,
     }
 

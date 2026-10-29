@@ -29,6 +29,7 @@ class AppConfig:
     auto_sync_on_launch: bool = True
     auto_sync_on_close: bool = True
     check_interval_seconds: int = 60
+    sync_full_brain: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -45,6 +46,7 @@ class AppConfig:
             auto_sync_on_launch=data.get("auto_sync_on_launch", True),
             auto_sync_on_close=data.get("auto_sync_on_close", True),
             check_interval_seconds=data.get("check_interval_seconds", 60),
+            sync_full_brain=data.get("sync_full_brain", False),
         )
 
 
