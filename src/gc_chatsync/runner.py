@@ -221,9 +221,15 @@ class SyncRunner:
                 remote_projects_staging = tmp_path / "remote_projects"
                 remote_db_staging = tmp_path / "remote_summaries.db"
 
+                def on_conv_pull(sub_msg: str):
+                    report(45, f"[Conversations] {sub_msg}")
+
+                def on_brain_pull(sub_msg: str):
+                    report(60, f"[Brain] {sub_msg}")
+
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    f_conv = executor.submit(self.drive.pull_conversations, conv_dir)
-                    f_brain = executor.submit(self.drive.pull_brain, brain_dir)
+                    f_conv = executor.submit(self.drive.pull_conversations, conv_dir, on_conv_pull)
+                    f_brain = executor.submit(self.drive.pull_brain, brain_dir, on_brain_pull)
                     f_proj = executor.submit(self.drive.pull_projects, remote_projects_staging)
                     f_sum = executor.submit(self.drive.pull_summaries, remote_db_staging)
 
@@ -329,7 +335,6 @@ class SyncRunner:
                 local_db = self.data_dir / "conversation_summaries.db"
                 staged_summaries_db = None
                 if local_db.is_file():
-                    create_backup(local_db)
                     staged_summaries_db = tmp_path / "conversation_summaries.db"
                     if not snapshot_db(local_db, staged_summaries_db):
                         logger.warning("Could not snapshot conversation_summaries.db. Postponing push.")
@@ -350,12 +355,18 @@ class SyncRunner:
                 brain_dir = self.data_dir / "brain"
                 logger.info("Uploading conversations, brain, and projects concurrently...")
 
+                def on_conv_push(sub_msg: str):
+                    report(60, f"[Upload Conversations] {sub_msg}")
+
+                def on_brain_push(sub_msg: str):
+                    report(75, f"[Upload Brain] {sub_msg}")
+
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                     futures = []
                     if staged_conv_dir.is_dir():
-                        futures.append(executor.submit(self.drive.push_conversations, staged_conv_dir))
+                        futures.append(executor.submit(self.drive.push_conversations, staged_conv_dir, on_conv_push))
                     if brain_dir.is_dir():
-                        futures.append(executor.submit(self.drive.push_brain, brain_dir))
+                        futures.append(executor.submit(self.drive.push_brain, brain_dir, on_brain_push))
                     if self.projects_dir.is_dir():
                         futures.append(executor.submit(self.drive.push_projects, self.projects_dir))
 
@@ -415,8 +426,18 @@ class SyncRunner:
         logger.info(f"Starting Antigravity: {bin_path_str}")
         print(f"🚀 Launching Antigravity ({bin_path_str})...")
 
+        popen_kwargs: dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+
         try:
-            proc = subprocess.Popen(cmd)
+            proc = subprocess.Popen(cmd, **popen_kwargs)
             if on_launched and callable(on_launched):
                 try:
                     on_launched()

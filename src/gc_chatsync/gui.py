@@ -74,8 +74,8 @@ class ChatSyncGUI:
         self.root = root
         self.palette = palette or get_palette()
         self.root.title(f"GC-ChatSync v{__version__}")
-        self.root.geometry("680x740")
-        self.root.minsize(620, 680)
+        self.root.geometry("680x790")
+        self.root.minsize(640, 720)
         self.root.configure(bg=self.palette.bg)
 
         self.config: AppConfig = load_config()
@@ -219,6 +219,17 @@ class ChatSyncGUI:
         self.btn_push.grid(row=0, column=1, sticky="ew", padx=4)
         self.btn_refresh.grid(row=0, column=2, sticky="ew", padx=(4, 0))
 
+        maint_row = ttk.Frame(actions)
+        maint_row.pack(fill="x", pady=(6, 0))
+        maint_row.columnconfigure((0, 1), weight=1, uniform="maint_btn")
+
+        self.btn_reconcile = ttk.Button(maint_row, text="🩺  Check & Reconcile", style="Secondary.TButton",
+                                        command=self.on_reconcile_clicked, cursor="hand2")
+        self.btn_restore = ttk.Button(maint_row, text="⏪  Restore Latest Backup", style="Secondary.TButton",
+                                      command=self.on_restore_backup_clicked, cursor="hand2")
+        self.btn_reconcile.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.btn_restore.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
         # 3b. Visual progress section
         self.progress_frame = ttk.Frame(main_frame)
         self.progress_frame.pack(fill="x", pady=(10, 4))
@@ -268,7 +279,15 @@ class ChatSyncGUI:
 
     def _set_buttons_state(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
-        for btn in (self.btn_run, self.btn_bypass, self.btn_pull, self.btn_push, self.btn_refresh):
+        for btn in (
+            self.btn_run,
+            self.btn_bypass,
+            self.btn_pull,
+            self.btn_push,
+            self.btn_refresh,
+            self.btn_reconcile,
+            self.btn_restore,
+        ):
             btn.configure(state=state)
 
     def refresh_status_async(self) -> None:
@@ -562,6 +581,87 @@ class ChatSyncGUI:
             "Upload to Google Drive completed!",
             "Push Error",
         )
+
+    def on_reconcile_clicked(self) -> None:
+        """Run Doctor / Reconcile to fix unindexed sessions and stale witness locks."""
+        if self.is_running:
+            return
+
+        self.is_running = True
+        self._set_buttons_state(False)
+        self.lbl_status_bar.configure(text="Running Doctor & Reconcile...")
+        self._set_progress(10, "Diagnosing and reconciling...")
+
+        def worker() -> None:
+            try:
+                def on_progress(pct: int, msg: str) -> None:
+                    self.root.after(0, lambda: self._set_progress(pct, msg))
+
+                from gc_chatsync.reconcile import run_reconcile
+
+                rep = run_reconcile(self.runner, progress_cb=on_progress)
+
+                if rep.status == "CRITICAL_ABORT":
+                    err_msg = "\n".join(rep.errors)
+                    self.root.after(0, lambda: self._set_progress(0, "Reconcile aborted."))
+                    self.root.after(0, lambda: messagebox.showerror("GC-ChatSync: Reconcile Aborted", err_msg))
+                else:
+                    summary = (
+                        f"Reconciliation completed ({rep.status}):\n\n"
+                        f"• Orphan sessions indexed: {rep.orphans_indexed} / {rep.orphans_found}\n"
+                        f"• Corrupt files isolated: {len(rep.corrupt_files)}\n"
+                        f"• Stale witness cleared: {rep.stale_witness_cleared}\n"
+                        f"• Remote conversations synced: {rep.remote_synced}\n"
+                    )
+                    if rep.warnings:
+                        summary += "\nWarnings:\n" + "\n".join(f"- {w}" for w in rep.warnings)
+
+                    self.root.after(0, lambda: self._set_progress(100, "Reconciliation finished."))
+                    self.root.after(0, lambda: messagebox.showinfo("GC-ChatSync: Doctor & Reconcile", summary))
+            except Exception as e:
+                logger.error(f"Reconcile error: {e}", exc_info=True)
+                self.root.after(0, lambda: self._set_progress(0, f"Error: {e}"))
+                self.root.after(0, lambda: messagebox.showerror("GC-ChatSync: Reconcile Error", str(e)))
+            finally:
+                self.is_running = False
+                self.root.after(0, lambda: self._set_buttons_state(True))
+                self.root.after(0, self.refresh_status_async)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_restore_backup_clicked(self) -> None:
+        """Prompt and restore conversation_summaries.db from the latest snapshot."""
+        if self.is_running:
+            return
+
+        from gc_chatsync.merger import restore_latest_backup
+        from gc_chatsync.runner import is_antigravity_process_running
+
+        if is_antigravity_process_running():
+            messagebox.showerror(
+                "GC-ChatSync: Restore Blocked",
+                "Antigravity is currently running. Please close Antigravity before restoring a backup.",
+            )
+            return
+
+        confirm = messagebox.askyesno(
+            "GC-ChatSync: Restore Latest Backup",
+            "Are you sure you want to restore the latest database backup?\n\n"
+            "This will revert conversation_summaries.db to its previous state.\n"
+            "A safety snapshot of your current database will be saved automatically.",
+        )
+        if not confirm:
+            return
+
+        db_path = self.runner.data_dir / "conversation_summaries.db"
+        success, msg, _ = restore_latest_backup(db_path)
+        if success:
+            self._set_progress(100, msg)
+            messagebox.showinfo("GC-ChatSync: Backup Restored", msg)
+            self.refresh_status_async()
+        else:
+            self._set_progress(0, msg)
+            messagebox.showerror("GC-ChatSync: Restore Failed", msg)
 
     def open_log_file(self) -> None:
         """Open the log file using the default system application."""

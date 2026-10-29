@@ -299,6 +299,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restore original Antigravity application icon from backup.",
     )
 
+    # Command: reconcile
+    subparsers.add_parser(
+        "reconcile",
+        parents=[common_parser],
+        help="Diagnose and repair inconsistencies: index orphan sessions, clear stale locks, audit cloud.",
+    )
+
+    # Command: restore-backup
+    subparsers.add_parser(
+        "restore-backup",
+        parents=[common_parser],
+        help="Restore conversation_summaries.db from the latest snapshot in .backups/.",
+    )
+
     return parser
 
 
@@ -324,6 +338,69 @@ def _cmd_restore_shortcut(args: argparse.Namespace) -> int:
     if success:
         print("✅ Original Antigravity application icon restored from backup.")
     return 0 if success else 1
+
+
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    """Handle reconcile command."""
+    from gc_chatsync.config import load_config
+    from gc_chatsync.reconcile import run_reconcile
+    from gc_chatsync.runner import SyncRunner
+
+    cfg = load_config()
+    runner = SyncRunner(cfg)
+
+    def on_progress(pct: int, msg: str):
+        print(f"[{pct}%] {msg}")
+
+    print("🩺 Running GC-ChatSync Doctor & Reconcile...\n")
+    report = run_reconcile(runner, progress_cb=on_progress)
+
+    print("\n" + "=" * 50)
+    if report.status == "SUCCESS":
+        print("✅ RECONCILIATION COMPLETE: Everything in sync.")
+    elif report.status == "WARNING":
+        print("⚠️ RECONCILIATION COMPLETE WITH WARNINGS.")
+    else:
+        print("❌ RECONCILIATION ABORTED.")
+    print("=" * 50)
+
+    print(f"• Orphans Indexed: {report.orphans_indexed} / {report.orphans_found}")
+    print(f"• Corrupt Files: {len(report.corrupt_files)}")
+    print(f"• Stale Witness Cleared: {report.stale_witness_cleared}")
+    print(f"• Remote Conversations Synced: {report.remote_synced}")
+
+    if report.warnings:
+        print("\nWarnings:")
+        for w in report.warnings:
+            print(f"  ⚠️ {w}")
+    if report.errors:
+        print("\nErrors:")
+        for err in report.errors:
+            print(f"  ❌ {err}")
+
+    return report.code
+
+
+def _cmd_restore_backup(args: argparse.Namespace) -> int:
+    """Handle restore-backup command."""
+    from gc_chatsync.config import load_config
+    from gc_chatsync.merger import restore_latest_backup
+    from gc_chatsync.runner import is_antigravity_process_running
+
+    if is_antigravity_process_running():
+        print("❌ Error: Antigravity is currently running. Please close it before restoring backup.")
+        return 2
+
+    cfg = load_config()
+    db_path = cfg.antigravity_data_dir / "conversation_summaries.db"
+    success, msg, backup_path = restore_latest_backup(db_path)
+
+    if success:
+        print(f"✅ {msg}")
+        return 0
+    else:
+        print(f"❌ {msg}")
+        return 1
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -352,6 +429,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "gui": lambda args: launch_gui(),
         "install-shortcut": _cmd_install_shortcut,
         "restore-shortcut": _cmd_restore_shortcut,
+        "reconcile": _cmd_reconcile,
+        "restore-backup": _cmd_restore_backup,
     }
 
     if not args.command:

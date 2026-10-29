@@ -27,8 +27,8 @@ def extract_path_from_file_uri(uri: str) -> str:
     """Extract filesystem path from a file:// URI.
 
     Example:
-    file:///home/claudio/Documents -> /home/claudio/Documents
-    file:///C:/Users/Claudio/Documents -> C:/Users/Claudio/Documents
+    file:///home/user/Documents -> /home/user/Documents
+    file:///C:/Users/Username/Documents -> C:/Users/Username/Documents
     """
     if not uri.startswith("file://"):
         return uri

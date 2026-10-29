@@ -31,19 +31,24 @@ Please perform the following onboarding workflow step-by-step:
 
 ---
 
-### Step 2: Google Drive Authorization Verification
+### Step 2: Google Drive Authorization Verification (Mandatory Personal Client ID)
 1. Run `rclone listremotes` to check if a remote named `gdrive:` (or similar) already exists.
 2. If configured, test connectivity using `rclone about gdrive:`.
-3. If not configured or unauthorized:
-   - Guide me through running `rclone config`.
-   - Instruct me to select:
-     - `n` (New remote) -> name: `gdrive`
+3. Check if a custom `client_id` is configured in `rclone config show gdrive`.
+   - **Crucial Requirement:** A personal Google Cloud OAuth Client ID is a **strict mandatory dependency** for GC-ChatSync. Without it, Google throttles the shared public rclone client pool (`RATE_LIMIT_EXCEEDED`), causing sync timeouts and upload stalls on multi-megabyte chat sessions. It is 100% free and requires no credit card.
+4. If missing or setting up from scratch:
+   - Guide the user to get credentials from [Google Cloud Console](https://console.cloud.google.com/):
+     a. Enable **Google Drive API** in Library.
+     b. Set **OAuth consent screen** to External, add user's email to Test Users.
+     c. Create **OAuth Client ID** of type **Desktop app**.
+   - Guide through `rclone config`:
+     - Select `n` (New remote) -> name: `gdrive` (or edit existing `e`)
      - Storage type: `drive` (Google Drive)
-     - Client ID & Secret: leave blank (press Enter)
-     - Scope: `1` (Full access: `drive` - recommended so both Windows and Linux devices can see the shared `GC-ChatSync` folder without requiring a custom OAuth Client ID).
-     - Root Folder ID & Service Account: leave blank (press Enter)
+     - **Client ID**: paste user's Google Client ID
+     - **Client Secret**: paste user's Google Client Secret
+     - Scope: `1` (Full access: `drive`)
      - Advanced config: `n`
-     - Auto config: `y` (opens browser to authenticate with Google Account)
+     - Auto config: `y` (opens browser to authorize)
      - Confirm and save: `y` -> `q`
 
 ---

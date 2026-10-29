@@ -12,10 +12,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("gc_chatsync.drive")
 
@@ -52,7 +53,7 @@ NOT_FOUND_CODES = {3, 4}
 RCLONE_PERF_FLAGS = [
     "--checkers", "2",
     "--transfers", "2",
-    "--drive-chunk-size", "16M",
+    "--drive-chunk-size", "32M",
     "--tpslimit", "8",
     "--drive-pacer-min-sleep", "50ms",
 ]
@@ -171,10 +172,96 @@ class DriveClient:
         except subprocess.TimeoutExpired as e:
             raise RcloneError(f"rclone command timed out after {timeout} seconds: {e}") from e
 
+    def run_cmd_streaming(
+        self,
+        args: List[str],
+        progress_cb: Optional[Callable[[str], None]] = None,
+        timeout: int = 600,
+        log_errors: bool = True,
+    ) -> str:
+        """Run an rclone command with live progress parsing via --use-json-log.
+
+        Emits active file transfers and status lines to `progress_cb`.
+        """
+        if progress_cb is None:
+            return self.run_cmd(args, timeout=timeout, log_errors=log_errors)
+
+        cmd = [self._rclone_bin] + list(args) + ["-v", "--use-json-log", "--stats", "1s"]
+        logger.debug(f"Executing (streaming): {' '.join(cmd)}")
+
+        extra_kwargs = {}
+        if sys.platform == "win32":
+            extra_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        extra_kwargs["stdin"] = subprocess.DEVNULL
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                **extra_kwargs,
+            )
+        except Exception as e:
+            raise RcloneError(f"Failed to start rclone: {e}") from e
+
+        all_lines: List[str] = []
+        error_lines: List[str] = []
+
+        def reader():
+            for raw_line in iter(proc.stdout.readline, ""):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                all_lines.append(line)
+                try:
+                    data = json.loads(line)
+                    lvl = data.get("level")
+                    msg = data.get("msg", "")
+                    obj = data.get("object")
+                    stats = data.get("stats")
+
+                    if lvl == "error":
+                        error_lines.append(f"{obj or 'error'}: {msg}")
+                    elif obj and msg:
+                        clean_msg = f"{obj} ({msg})"
+                        progress_cb(clean_msg)
+                    elif stats:
+                        transfers = stats.get("transfers", 0)
+                        total_transfers = stats.get("totalTransfers", 0)
+                        bytes_done = stats.get("bytes", 0)
+                        total_bytes = stats.get("totalBytes", 0)
+                        pct = int((bytes_done / total_bytes) * 100) if total_bytes > 0 else 0
+                        speed = stats.get("speed", 0)
+                        speed_mb = f"{speed / (1024 * 1024):.1f} MB/s" if speed > 0 else ""
+                        status_str = f"{transfers}/{total_transfers} files ({pct}%) {speed_mb}".strip()
+                        progress_cb(status_str)
+                except Exception:
+                    if "error" in line.lower():
+                        error_lines.append(line)
+
+        reader_thread = threading.Thread(target=reader, daemon=True)
+        reader_thread.start()
+        reader_thread.join(timeout=timeout)
+
+        if reader_thread.is_alive():
+            proc.kill()
+            raise RcloneError(f"rclone command timed out after {timeout} seconds")
+
+        proc.wait()
+        if proc.returncode != 0:
+            err_msg = "\n".join(error_lines) or f"rclone exited with code {proc.returncode}"
+            if log_errors and proc.returncode not in NOT_FOUND_CODES:
+                logger.error(f"Command failed ({cmd}): {err_msg}")
+            raise RcloneError(err_msg, returncode=proc.returncode)
+
+        return "\n".join(all_lines)
+
     def test_connection(self) -> bool:
         """Check if remote is accessible and authorized (fast directory ping without slow quota checks)."""
         try:
-            self.run_cmd(["lsf", self.remote_base, "--max-depth", "1", "--tpslimit", "8"], timeout=30, log_errors=False)
+            self.run_cmd(["lsf", self.remote_base, "--max-depth", "1", "--tpslimit", "8"], timeout=60, log_errors=False)
             return True
         except RcloneError as e:
             if e.returncode in NOT_FOUND_CODES:
@@ -194,7 +281,7 @@ class DriveClient:
         """
         remote_path = f"{self.remote_base}/manifest.json"
         try:
-            output = self.run_cmd(["cat", remote_path], timeout=30, log_errors=False)
+            output = self.run_cmd(["cat", remote_path], timeout=60, log_errors=False)
             data = json.loads(output)
             return SyncManifest.from_dict(data)
         except RcloneError as e:
@@ -241,7 +328,7 @@ class DriveClient:
         self.run_cmd(["copyto", str(local_db_path), remote_file] + RCLONE_PERF_FLAGS, timeout=120)
         logger.info("Uploaded conversation_summaries.db to Google Drive")
 
-    def pull_conversations(self, local_conversations_dir: Path) -> None:
+    def pull_conversations(self, local_conversations_dir: Path, progress_cb: Optional[Callable[[str], None]] = None) -> None:
         """Download new/updated conversation session databases from remote."""
         local_conversations_dir.mkdir(parents=True, exist_ok=True)
         remote_dir = f"{self.remote_base}/conversations"
@@ -249,14 +336,14 @@ class DriveClient:
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
         try:
-            self.run_cmd(args, timeout=600, log_errors=False)
+            self.run_cmd_streaming(args, progress_cb=progress_cb, timeout=600, log_errors=False)
         except RcloneError as e:
             if e.returncode in NOT_FOUND_CODES:
                 logger.debug(f"Remote conversations folder not found on Drive (clean remote): {e}")
             else:
                 raise
 
-    def push_conversations(self, local_conversations_dir: Path) -> None:
+    def push_conversations(self, local_conversations_dir: Path, progress_cb: Optional[Callable[[str], None]] = None) -> None:
         """Upload new/updated conversation session databases to remote."""
         if not local_conversations_dir.is_dir():
             return
@@ -264,9 +351,9 @@ class DriveClient:
         args = ["copy", str(local_conversations_dir), remote_dir, "--update", "--fast-list"] + RCLONE_PERF_FLAGS
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
-        self.run_cmd(args, timeout=600)
+        self.run_cmd_streaming(args, progress_cb=progress_cb, timeout=600)
 
-    def pull_brain(self, local_brain_dir: Path) -> None:
+    def pull_brain(self, local_brain_dir: Path, progress_cb: Optional[Callable[[str], None]] = None) -> None:
         """Download new/updated brain artifacts and transcripts from remote."""
         local_brain_dir.mkdir(parents=True, exist_ok=True)
         remote_dir = f"{self.remote_base}/brain"
@@ -274,14 +361,14 @@ class DriveClient:
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
         try:
-            self.run_cmd(args, timeout=600, log_errors=False)
+            self.run_cmd_streaming(args, progress_cb=progress_cb, timeout=600, log_errors=False)
         except RcloneError as e:
             if e.returncode in NOT_FOUND_CODES:
                 logger.debug(f"Remote brain folder not found on Drive (clean remote): {e}")
             else:
                 raise
 
-    def push_brain(self, local_brain_dir: Path) -> None:
+    def push_brain(self, local_brain_dir: Path, progress_cb: Optional[Callable[[str], None]] = None) -> None:
         """Upload new/updated brain artifacts and transcripts to remote."""
         if not local_brain_dir.is_dir():
             return
@@ -289,25 +376,25 @@ class DriveClient:
         args = ["copy", str(local_brain_dir), remote_dir, "--update", "--fast-list"] + RCLONE_PERF_FLAGS
         for pat in EXCLUDE_PATTERNS:
             args.extend(["--exclude", pat])
-        self.run_cmd(args, timeout=600)
+        self.run_cmd_streaming(args, progress_cb=progress_cb, timeout=600)
 
-    def pull_projects(self, local_projects_staging: Path) -> None:
+    def pull_projects(self, local_projects_staging: Path, progress_cb: Optional[Callable[[str], None]] = None) -> None:
         """Download remote project definitions into a staging directory for translation."""
         local_projects_staging.mkdir(parents=True, exist_ok=True)
         remote_dir = f"{self.remote_base}/projects"
         args = ["copy", remote_dir, str(local_projects_staging), "--update", "--fast-list"] + RCLONE_PERF_FLAGS
         try:
-            self.run_cmd(args, timeout=180, log_errors=False)
+            self.run_cmd_streaming(args, progress_cb=progress_cb, timeout=180, log_errors=False)
         except RcloneError as e:
             if e.returncode in NOT_FOUND_CODES:
                 logger.debug(f"Remote projects folder not found on Drive (clean remote): {e}")
             else:
                 raise
 
-    def push_projects(self, local_projects_dir: Path) -> None:
+    def push_projects(self, local_projects_dir: Path, progress_cb: Optional[Callable[[str], None]] = None) -> None:
         """Upload local project definitions to Google Drive."""
         if not local_projects_dir.is_dir():
             return
         remote_dir = f"{self.remote_base}/projects"
         args = ["copy", str(local_projects_dir), remote_dir, "--update", "--fast-list"] + RCLONE_PERF_FLAGS
-        self.run_cmd(args, timeout=180)
+        self.run_cmd_streaming(args, progress_cb=progress_cb, timeout=180)

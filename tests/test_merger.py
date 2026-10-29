@@ -13,6 +13,8 @@ from gc_chatsync.merger import (
     create_backup,
     is_db_exclusive_accessible,
     merge_summaries_databases,
+    restore_latest_backup,
+    snapshot_db,
 )
 
 
@@ -71,7 +73,7 @@ class TestDatabaseMerger(unittest.TestCase):
         try:
             conn_l.execute("""
                 INSERT INTO conversation_summaries VALUES
-                ('id-A', 'Local Chat A', 'Hello', 5, '2026-10-28 10:00:00', 'file:///home/claudio', 'proj-1');
+                ('id-A', 'Local Chat A', 'Hello', 5, '2026-10-28 10:00:00', 'file:///home/developer', 'proj-1');
             """)
             conn_l.commit()
         finally:
@@ -209,6 +211,78 @@ class TestDatabaseMerger(unittest.TestCase):
         with self.assertRaises(DatabaseMergeError):
             merge_summaries_databases(self.local_db, self.remote_db)
 
+    def test_create_backup_deduplication(self):
+        self._create_sample_db(self.local_db)
+        b1 = create_backup(self.local_db)
+        self.assertIsNotNone(b1)
+
+        # Immediate second backup with zero DB changes should return identical backup path
+        b2 = create_backup(self.local_db, force=False)
+        self.assertEqual(b1, b2)
+
+        # Only 1 backup file should exist
+        bak_dir = self.local_db.parent / ".backups"
+        self.assertEqual(len(list(bak_dir.glob("local.db.bak_*"))), 1)
+
+    def test_create_backup_retention_and_safety_floor(self):
+        self._create_sample_db(self.local_db)
+        bak_dir = self.local_db.parent / ".backups"
+        bak_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create 5 dummy backup files with old timestamps (10 days old)
+        now = time.time()
+        old_mtime = now - (10 * 86400)
+        for i in range(5):
+            p = bak_dir / f"local.db.bak_2026100{i}_000000_000000"
+            p.write_text("old content")
+            import os
+            os.utime(p, (old_mtime, old_mtime))
+
+        # Run create_backup with max_age_days=7 and min_keep=3 (force=True to bypass dedup)
+        new_bak = create_backup(self.local_db, max_age_days=7, min_keep=3, force=True)
+        self.assertIsNotNone(new_bak)
+
+        # Backups remaining should be exactly min_keep=3
+        remaining = list(bak_dir.glob("local.db.bak_*"))
+        self.assertEqual(len(remaining), 3)
+
+    def test_restore_latest_backup(self):
+        self._create_sample_db(self.local_db)
+        # Add a record to local_db
+        conn = sqlite3.connect(self.local_db)
+        try:
+            conn.execute(
+                "INSERT INTO conversation_summaries (conversation_id, title, last_modified_time) VALUES ('c1', 'Title 1', '2026-10-28');"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Create backup containing 'c1'
+        b1 = create_backup(self.local_db, force=True)
+        self.assertIsNotNone(b1)
+
+        # Now corrupt/alter local_db by deleting record
+        conn2 = sqlite3.connect(self.local_db)
+        try:
+            conn2.execute("DELETE FROM conversation_summaries WHERE conversation_id='c1';")
+            conn2.commit()
+            self.assertEqual(conn2.execute("SELECT count(*) FROM conversation_summaries;").fetchone()[0], 0)
+        finally:
+            conn2.close()
+
+        # Restore from latest backup
+        success, msg, restored_bak = restore_latest_backup(self.local_db)
+        self.assertTrue(success)
+        self.assertEqual(restored_bak, b1)
+
+        # Verify that 'c1' is restored
+        conn3 = sqlite3.connect(self.local_db)
+        try:
+            self.assertEqual(conn3.execute("SELECT count(*) FROM conversation_summaries;").fetchone()[0], 1)
+        finally:
+            conn3.close()
+
     def test_is_db_exclusive_accessible(self):
         self._create_sample_db(self.local_db)
         self.assertTrue(is_db_exclusive_accessible(self.local_db))
@@ -242,6 +316,18 @@ class TestDatabaseMerger(unittest.TestCase):
 
         with self.assertRaises(DatabaseMergeError):
             merge_summaries_databases(self.local_db, self.remote_db)
+
+    def test_snapshot_db_preserves_mtime(self):
+        import os
+        self._create_sample_db(self.local_db)
+        past_timestamp = 1600000000.0
+        os.utime(self.local_db, (past_timestamp, past_timestamp))
+
+        target_snap = self.dir_path / "snap.db"
+        success = snapshot_db(self.local_db, target_snap)
+        self.assertTrue(success)
+        self.assertTrue(target_snap.is_file())
+        self.assertAlmostEqual(target_snap.stat().st_mtime, past_timestamp, places=1)
 
 
 if __name__ == "__main__":

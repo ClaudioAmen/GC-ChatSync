@@ -7,14 +7,16 @@ future Antigravity schema updates.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import shutil
 import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger("gc_chatsync.merger")
 
@@ -111,6 +113,11 @@ def snapshot_db(source_path: Path, target_path: Path) -> bool:
         finally:
             d_conn.close()
             s_conn.close()
+        try:
+            s_stat = source_path.stat()
+            os.utime(target_path, (s_stat.st_atime, s_stat.st_mtime))
+        except Exception as utime_err:
+            logger.debug(f"Could not preserve mtime on snapshot {target_path}: {utime_err}")
         return True
     except Exception as e:
         logger.warning(f"SQLite online backup snapshot failed for {source_path}: {e}")
@@ -121,14 +128,38 @@ def snapshot_db(source_path: Path, target_path: Path) -> bool:
             return False
 
 
-def create_backup(db_path: Path, max_backups: int = 5) -> Optional[Path]:
-    """Create a crash-safe timestamped backup of the database and prune old backups.
+def _compute_file_sha256(path: Path) -> str:
+    """Calculate SHA256 checksum of a file for content deduplication."""
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            while chunk := f.read(65536):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
 
-    Uses SQLite online backup API to ensure a consistent, lock-free snapshot.
-    Keeps the last `max_backups` copies in a `.backups` directory next to the database.
+
+def create_backup(
+    db_path: Path,
+    max_age_days: int = 7,
+    min_keep: int = 3,
+    force: bool = False,
+    max_backups: Optional[int] = None,
+) -> Optional[Path]:
+    """Create a crash-safe timestamped backup of the database with retention and deduplication.
+
+    - Content deduplication: If the database is byte-identical to the latest backup,
+      creation is skipped to prevent duplicate snapshots from zero-change sessions.
+    - Retention policy: Automatically prunes backups older than `max_age_days` (default 7),
+      while strictly guaranteeing at least `min_keep` (default 3) snapshots are preserved.
     """
     if not db_path.is_file():
         return None
+
+    if max_backups is not None:
+        min_keep = max_backups
+        force = True
 
     # Checkpoint before backup to ensure WAL data is committed into .db
     checkpoint_db(db_path)
@@ -136,10 +167,26 @@ def create_backup(db_path: Path, max_backups: int = 5) -> Optional[Path]:
     backup_dir = db_path.parent / ".backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    backup_file = backup_dir / f"{db_path.name}.bak_{timestamp}"
+    existing_backups = sorted(
+        backup_dir.glob(f"{db_path.name}.bak_*"),
+        key=lambda p: (p.stat().st_mtime, p.name),
+    )
 
-    # Use SQLite online backup API for crash-safe, lock-safe snapshotting
+    current_hash = _compute_file_sha256(db_path)
+
+    # 1. Deduplication check: compare hash with latest existing backup
+    if not force and existing_backups and current_hash:
+        latest = existing_backups[-1]
+        # Check if hash is embedded in filename or content matches
+        if latest.name.endswith(f"_{current_hash[:16]}") or _compute_file_sha256(latest) == current_hash:
+            logger.debug(f"Database {db_path.name} identical to latest backup ({latest.name}); skipping duplicate.")
+            return latest
+
+    # 2. Create new snapshot using SQLite online backup API
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    hash_suffix = f"_{current_hash[:16]}" if current_hash else ""
+    backup_file = backup_dir / f"{db_path.name}.bak_{timestamp}{hash_suffix}"
+
     try:
         source_conn = sqlite3.connect(db_path)
         dest_conn = sqlite3.connect(backup_file)
@@ -153,20 +200,73 @@ def create_backup(db_path: Path, max_backups: int = 5) -> Optional[Path]:
         logger.warning(f"SQLite online backup failed for {db_path}, falling back to copy: {e}")
         shutil.copy2(db_path, backup_file)
 
-    # Prune old backups
-    existing_backups = sorted(
+    # 3. Prune backups older than max_age_days, preserving at least min_keep
+    all_backups = sorted(
         backup_dir.glob(f"{db_path.name}.bak_*"),
-        key=lambda p: p.stat().st_mtime
+        key=lambda p: (p.stat().st_mtime, p.name),
     )
-    while len(existing_backups) > max_backups:
-        oldest = existing_backups.pop(0)
-        try:
-            oldest.unlink()
-            logger.debug(f"Pruned old backup: {oldest}")
-        except OSError as e:
-            logger.warning(f"Failed to prune old backup {oldest}: {e}")
+    if len(all_backups) > min_keep:
+        cutoff = time.time() - (max_age_days * 86400)
+        candidates_to_prune = all_backups[:-min_keep]
+        for candidate in candidates_to_prune:
+            try:
+                # If max_backups was explicitly specified, prune by count; otherwise prune by age cutoff
+                if max_backups is not None or candidate.stat().st_mtime < cutoff:
+                    candidate.unlink()
+                    logger.debug(f"Pruned old backup: {candidate.name}")
+            except OSError as e:
+                logger.warning(f"Failed to prune old backup {candidate}: {e}")
 
     return backup_file
+
+
+def restore_latest_backup(db_path: Path) -> Tuple[bool, str, Optional[Path]]:
+    """Restore database from the most recent backup file in `.backups/`.
+
+    Safeguards:
+    1. Creates a safety `.pre_restore_bak` of current DB before replacing.
+    2. Deletes stale `-wal` and `-shm` sidecar journals to prevent SQLite frame replays.
+    """
+    backup_dir = db_path.parent / ".backups"
+    if not backup_dir.is_dir():
+        return False, "No backup directory found.", None
+
+    existing_backups = sorted(
+        backup_dir.glob(f"{db_path.name}.bak_*"),
+        key=lambda p: p.stat().st_mtime,
+    )
+    if not existing_backups:
+        return False, "No backup snapshots available to restore.", None
+
+    latest_backup = existing_backups[-1]
+
+    # Pre-restore safety snapshot of the current state
+    if db_path.is_file():
+        safety_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safety_bak = backup_dir / f"{db_path.name}.pre_restore_{safety_ts}"
+        try:
+            shutil.copy2(db_path, safety_bak)
+            logger.info(f"Safety snapshot saved before restore: {safety_bak.name}")
+        except Exception as e:
+            logger.warning(f"Could not create safety snapshot before restore: {e}")
+
+    try:
+        shutil.copy2(latest_backup, db_path)
+
+        # Clear stale WAL/SHM sidecars
+        for ext in ("-wal", "-shm"):
+            sidecar = db_path.parent / (db_path.name + ext)
+            if sidecar.exists():
+                try:
+                    sidecar.unlink()
+                except OSError:
+                    pass
+
+        logger.info(f"Restored database {db_path.name} from backup {latest_backup.name}")
+        return True, f"Successfully restored {db_path.name} from backup ({latest_backup.name})", latest_backup
+    except Exception as e:
+        logger.error(f"Failed to restore backup {latest_backup} to {db_path}: {e}")
+        return False, f"Failed to restore backup: {e}", None
 
 
 def get_table_columns(conn: sqlite3.Connection, db_prefix: str, table_name: str) -> List[str]:

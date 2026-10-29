@@ -17,31 +17,31 @@ class TestProjectMapper(unittest.TestCase):
 
     def test_extract_path_from_file_uri(self):
         self.assertEqual(
-            extract_path_from_file_uri("file:///home/claudio/Documents/progetti"),
-            "/home/claudio/Documents/progetti"
+            extract_path_from_file_uri("file:///home/developer/Documents/projects"),
+            "/home/developer/Documents/projects"
         )
         self.assertEqual(
-            extract_path_from_file_uri("file:///C:/Users/Claudio/Documents/progetti"),
-            "C:/Users/Claudio/Documents/progetti"
+            extract_path_from_file_uri("file:///C:/Users/Developer/Documents/projects"),
+            "C:/Users/Developer/Documents/projects"
         )
         self.assertEqual(
-            extract_path_from_file_uri("file:///c:/Users/Claudio/Documents/progetti"),
-            "c:/Users/Claudio/Documents/progetti"
+            extract_path_from_file_uri("file:///c:/Users/Developer/Documents/projects"),
+            "c:/Users/Developer/Documents/projects"
         )
 
     def test_path_to_file_uri(self):
         self.assertEqual(
-            path_to_file_uri("/home/claudio/Documents", "linux"),
-            "file:///home/claudio/Documents"
+            path_to_file_uri("/home/developer/Documents", "linux"),
+            "file:///home/developer/Documents"
         )
         self.assertEqual(
-            path_to_file_uri("C:/Users/Claudio/Documents", "windows"),
-            "file:///C:/Users/Claudio/Documents"
+            path_to_file_uri("C:/Users/Developer/Documents", "windows"),
+            "file:///C:/Users/Developer/Documents"
         )
 
     def test_translate_linux_to_windows(self):
-        src_uri = "file:///home/claudio/Documents/progetti/my-project"
-        win_home = Path("C:/Users/ClaudioAmen")
+        src_uri = "file:///home/developer/Documents/projects/my-project"
+        win_home = Path("C:/Users/Developer")
 
         translated = translate_file_uri(
             src_uri,
@@ -50,12 +50,12 @@ class TestProjectMapper(unittest.TestCase):
         )
         self.assertEqual(
             translated,
-            "file:///C:/Users/ClaudioAmen/Documents/progetti/my-project"
+            "file:///C:/Users/Developer/Documents/projects/my-project"
         )
 
     def test_translate_windows_to_linux(self):
-        src_uri = "file:///C:/Users/ClaudioAmen/Documents/progetti/my-project"
-        linux_home = Path("/home/claudio")
+        src_uri = "file:///C:/Users/Developer/Documents/projects/my-project"
+        linux_home = Path("/home/developer")
 
         translated = translate_file_uri(
             src_uri,
@@ -64,7 +64,7 @@ class TestProjectMapper(unittest.TestCase):
         )
         self.assertEqual(
             translated,
-            "file:///home/claudio/Documents/progetti/my-project"
+            "file:///home/developer/Documents/projects/my-project"
         )
 
     def test_translate_with_custom_mapping(self):
@@ -81,11 +81,11 @@ class TestProjectMapper(unittest.TestCase):
     def test_translate_project_json(self):
         sample_project = {
             "id": "4777bba5-4413-4c0f-b059-3321e1755397",
-            "name": "progetti",
+            "name": "projects",
             "projectResources": {
                 "resources": [
                     {
-                        "folderUri": "file:///home/claudio/Documents/progetti"
+                        "folderUri": "file:///home/developer/Documents/projects"
                     }
                 ]
             },
@@ -95,21 +95,21 @@ class TestProjectMapper(unittest.TestCase):
         translated_project = translate_project_json(
             sample_project,
             target_os="windows",
-            target_home=Path("C:/Users/Claudio")
+            target_home=Path("C:/Users/Developer")
         )
 
         res_uri = translated_project["projectResources"]["resources"][0]["folderUri"]
-        self.assertEqual(res_uri, "file:///C:/Users/Claudio/Documents/progetti")
+        self.assertEqual(res_uri, "file:///C:/Users/Developer/Documents/projects")
         self.assertEqual(translated_project["id"], "4777bba5-4413-4c0f-b059-3321e1755397")
 
     def test_translate_workspace_uris_string(self):
-        raw_json = '["file:///home/claudio/Documents/progetti"]'
+        raw_json = '["file:///home/developer/Documents/projects"]'
         translated = translate_workspace_uris_string(
             raw_json,
             target_os="windows",
-            target_home=Path("C:/Users/Claudio")
+            target_home=Path("C:/Users/Developer")
         )
-        self.assertEqual(translated, '["file:///C:/Users/Claudio/Documents/progetti"]')
+        self.assertEqual(translated, '["file:///C:/Users/Developer/Documents/projects"]')
 
 
 if __name__ == "__main__":

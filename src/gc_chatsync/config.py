@@ -92,7 +92,7 @@ def get_log_file_path() -> Path:
 
 
 def get_default_device_id() -> str:
-    """Generate a readable default device ID (e.g. windows-MyPC or linux-ThinkPad)."""
+    """Generate a readable default device ID (e.g. windows-desktop or linux-laptop)."""
     os_name = get_system_name()
     node = platform.node() or "device"
     clean_node = "".join(c for c in node if c.isalnum() or c in "-_")

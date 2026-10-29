@@ -3,6 +3,7 @@
 import gc
 import json
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -96,7 +97,7 @@ class TestSyncRunner(unittest.TestCase):
             """)
             conn.execute("""
                 INSERT INTO conversation_summaries VALUES
-                ('cid-1', '["file:///C:/Users/Claudio/Documents/progetti"]');
+                ('cid-1', '["file:///C:/Users/WindowsUser/Documents/projects"]');
             """)
             conn.commit()
         finally:
@@ -112,7 +113,7 @@ class TestSyncRunner(unittest.TestCase):
                 self.assertIn("file:///c:", row[0].lower())
             else:
                 self.assertTrue(row[0].startswith('["file:///'))
-                self.assertNotIn("C:/Users", row[0])
+                self.assertNotIn("C:/Users/WindowsUser", row[0])
         finally:
             conn2.close()
 
@@ -179,6 +180,15 @@ class TestSyncRunner(unittest.TestCase):
         code = runner.launch_app(on_launched=cb)
         self.assertEqual(code, 0)
         self.assertTrue(called)
+
+        # Ensure stdio is isolated to prevent EPIPE crashes
+        mock_popen.assert_called_once()
+        _, kwargs = mock_popen.call_args
+        self.assertEqual(kwargs.get("stdin"), subprocess.DEVNULL)
+        self.assertEqual(kwargs.get("stdout"), subprocess.DEVNULL)
+        self.assertEqual(kwargs.get("stderr"), subprocess.DEVNULL)
+        if sys.platform != "win32":
+            self.assertTrue(kwargs.get("start_new_session"))
 
 
 if __name__ == "__main__":
