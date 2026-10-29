@@ -2,9 +2,11 @@
 
 > **Lightweight, cross-platform Google Drive sync for Google Antigravity AI chat histories, brain artifacts, and project workspaces.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platforms-Linux%20%7C%20Windows-blue.svg)](#quick-start)
-[![Storage](https://img.shields.io/badge/Storage-Google%20Drive-orange.svg)](#1-prerequisites-google-drive-via-rclone)
+[![CI](https://github.com/ClaudioAmen/GC-ChatSync/actions/workflows/ci.yml/badge.svg)](https://github.com/ClaudioAmen/GC-ChatSync/actions/workflows/ci.yml)
+[![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
+[![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-blue.svg)](#quick-start)
+[![Storage](https://img.shields.io/badge/storage-Google%20Drive%20(rclone)-orange.svg)](#1-prerequisites-google-drive-via-rclone)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
 
@@ -23,7 +25,21 @@ GC-ChatSync is purpose-built for developers who alternate between multiple works
   - Switch to **Device B** $\rightarrow$ Launch Antigravity $\rightarrow$ Automatic pull and incremental SQLite merge of new sessions.
   - *(Note: Concurrent real-time editing of the exact same chat session on two devices simultaneously is not supported by Antigravity's local SQLite architecture).*
 - **Agnostic Cross-Platform Compatibility:** Workspace paths (`/home/...` $\leftrightarrow$ `C:\Users\...`), index entries, and OS application shortcuts adapt automatically regardless of your operating system mix.
-- **Why Not Generic Cloud Clients?** Standard desktop cloud sync tools (Google Drive for Desktop, OneDrive, Dropbox) corrupt SQLite databases in Write-Ahead Log (`WAL`) mode, blindly overwrite global session index files, break absolute workspace paths across platforms, and lack native desktop clients on Linux.
+
+---
+
+## ⚖️ Why Not Generic Cloud Clients?
+
+Standard desktop cloud sync tools (Google Drive for Desktop, OneDrive, Dropbox, Syncthing) are designed for normal files and **fail dangerously on live developer databases**:
+
+| Feature / Threat | Generic Cloud Clients (OneDrive, GDrive Desktop) | 🌌 GC-ChatSync |
+| :--- | :---: | :---: |
+| **SQLite WAL Lock Safety** | ❌ Corrupts DBs by copying active `-wal`/`-shm` journals mid-write | ✅ Checkpoints WAL & verifies zero external locks before copy |
+| **Multi-Machine Chat Index** | ❌ Blindly overwrites `conversation_summaries.db` (data loss) | ✅ Two-way row-level SQLite merge (preserves all sessions) |
+| **Cross-Platform Workspaces** | ❌ Breaks: Windows looks for `/home/...`, Linux looks for `C:\...` | ✅ Translates workspace URIs automatically in `.db` and `.json` |
+| **Crash & Offline Resilience** | ❌ Syncs half-written/truncated files during abrupt shutdowns | ✅ Push data first, manifest strictly last; auto-recovers dirty sessions |
+| **Linux Native Client** | ❌ No official Google Drive desktop client for Linux | ✅ 100% native on Linux (GNOME/KDE) and Windows 10/11 |
+| **Bandwidth & Storage Overhead** | ⚠️ Re-uploads entire multi-gigabyte folders constantly | ✅ Incremental delta upload: only syncs modified `.db` files |
 
 ---
 
@@ -72,13 +88,16 @@ cd GC-ChatSync
 # Linux (pipx recommended)
 pipx install .   # or: pip install --user -e .
 
-# Windows
+# Windows (PowerShell)
 pip install -e .
 ```
 
 ### 3. Usage
 
 ```bash
+# Interactive Setup Wizard (First-time onboarding)
+gc-chatsync setup
+
 # Open Graphical Dashboard (Default)
 gc-chatsync gui
 
@@ -103,7 +122,29 @@ gc-chatsync restore-backup   # ⏪ Revert index to the latest pre-merge snapshot
 
 ## 🛠️ How It Works
 
-1. **Before Launch (PULL):** Inspects the cloud manifest. If updates exist, downloads deltas via `rclone` (using 4 parallel workers), creates an atomic SQLite backup, and merges `conversation_summaries.db` incrementally.
+```mermaid
+flowchart LR
+    subgraph PullPhase ["1. Pull Phase"]
+        A["Inspect Cloud Manifest"] --> B["Download Deltas (Parallel)"]
+        B --> C["Pre-merge DB Backup"]
+        C --> D["Row-Level SQLite Merge"]
+    end
+    
+    subgraph ExecutionPhase ["2. Antigravity Active"]
+        D --> E["Launch Antigravity"]
+        E --> F["Witness Heartbeat Thread"]
+    end
+
+    subgraph PushPhase ["3. Push Phase (On Exit)"]
+        F --> G["Wait for SQLite Locks"]
+        G --> H["Checkpoint WAL Journals"]
+        H --> I["Atomic Snapshot Only Modified DBs"]
+        I --> J["Upload Conversations & Brain"]
+        J --> K["Upload Manifest Strictly Last"]
+    end
+```
+
+1. **Before Launch (PULL):** Inspects the cloud manifest. If updates exist, downloads deltas via `rclone` (using parallel workers), creates an atomic SQLite backup in `.backups/`, and merges `conversation_summaries.db` incrementally.
 2. **Execution:** Launches Antigravity and runs an epoch-guarded witness heartbeat thread. (If offline, launches in safe local mode, marks the session dirty for subsequent recovery, and suppresses the push on exit).
 3. **On Close (PUSH):** Checkpoints SQLite WAL journals, takes crash-safe database snapshots, uploads modified sessions and brain artifacts to Drive, updates the manifest revision epoch, and clears the dirty flag.
 
