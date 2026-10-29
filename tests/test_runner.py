@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, call, patch
 
 from gc_chatsync.config import AppConfig
 from gc_chatsync.drive import SyncManifest
+from gc_chatsync.lock import clear_session_dirty
 from gc_chatsync.runner import SyncRunner
 
 
@@ -23,12 +24,20 @@ class TestSyncRunner(unittest.TestCase):
         self.tmp_path = Path(self.temp_dir.name)
         self.data_dir = self.tmp_path / "antigravity"
         self.data_dir.mkdir()
+        self.config_dir = self.tmp_path / "config"
+        self.config_dir.mkdir()
 
-        self.patch_which = patch("shutil.which", return_value="/usr/bin/rclone")
+        self.patch_cfg_dir = patch("gc_chatsync.lock.get_config_dir", return_value=self.config_dir)
+        self.patch_cfg_dir.start()
+
+        rclone_dummy = "rclone.exe" if sys.platform == "win32" else "/usr/bin/rclone"
+        self.patch_which = patch("shutil.which", return_value=rclone_dummy)
         self.mock_which = self.patch_which.start()
 
         self.patch_lock = patch("gc_chatsync.runner.ProcessLock")
         self.mock_lock = self.patch_lock.start()
+
+        clear_session_dirty()
 
         self.cfg = AppConfig(
             device_id="test-laptop",
@@ -39,8 +48,10 @@ class TestSyncRunner(unittest.TestCase):
         )
 
     def tearDown(self):
+        clear_session_dirty()
         self.patch_lock.stop()
         self.patch_which.stop()
+        self.patch_cfg_dir.stop()
         gc.collect()
         try:
             self.temp_dir.cleanup()

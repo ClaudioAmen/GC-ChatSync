@@ -177,6 +177,10 @@ class DriveClient:
             return res.stdout
         except subprocess.TimeoutExpired as e:
             raise RcloneError(f"rclone command timed out after {timeout} seconds: {e}") from e
+        except (FileNotFoundError, OSError) as e:
+            if log_errors:
+                logger.error(f"rclone executable '{self._rclone_bin}' could not be executed: {e}")
+            raise RcloneNotFoundError(f"rclone executable '{self._rclone_bin}' could not be executed: {e}") from e
         finally:
             elapsed = time.perf_counter() - t0
             cmd_action = args[0] if args else "unknown"

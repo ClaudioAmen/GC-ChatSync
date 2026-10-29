@@ -1,8 +1,10 @@
 """Unit tests for ProcessLock and dirty session tracking."""
 
+import gc
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -27,7 +29,16 @@ class TestProcessLock(unittest.TestCase):
 
     def tearDown(self):
         ProcessLock._depth = 0
-        self.temp_dir.cleanup()
+        gc.collect()
+        try:
+            self.temp_dir.cleanup()
+        except PermissionError:
+            time.sleep(0.1)
+            gc.collect()
+            try:
+                self.temp_dir.cleanup()
+            except Exception:
+                pass
 
     @patch("gc_chatsync.lock.get_config_dir")
     def test_acquire_and_release(self, mock_dir):

@@ -2,6 +2,7 @@
 
 import gc
 import sqlite3
+import sys
 import tempfile
 import time
 import unittest
@@ -33,7 +34,8 @@ class TestReconcileEngine(unittest.TestCase):
             rclone_remote="testremote",
             device_id="test-device",
         )
-        self.patch_which = patch("shutil.which", return_value="/usr/bin/rclone")
+        rclone_dummy = "rclone.exe" if sys.platform == "win32" else "/usr/bin/rclone"
+        self.patch_which = patch("shutil.which", return_value=rclone_dummy)
         self.patch_which.start()
 
     def tearDown(self):

@@ -9,6 +9,7 @@ import platform
 import re
 import shutil
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
@@ -57,8 +58,8 @@ def get_config_dir() -> Path:
     sys_name = get_system_name()
     try:
         home = Path.home()
-    except RuntimeError:
-        home = Path("C:/") if sys_name == "windows" else Path("/tmp")
+    except Exception:
+        home = Path(tempfile.gettempdir())
 
     if sys_name == "windows":
         appdata = os.environ.get("APPDATA")
@@ -145,8 +146,8 @@ def get_default_antigravity_data_dir() -> Path:
     sys_name = get_system_name()
     try:
         home = Path.home()
-    except RuntimeError:
-        home = Path("C:/") if sys_name == "windows" else Path("/tmp")
+    except Exception:
+        home = Path(tempfile.gettempdir())
 
     if sys_name == "windows":
         return home / ".gemini" / "antigravity"
@@ -158,8 +159,8 @@ def get_default_antigravity_projects_dir() -> Path:
     sys_name = get_system_name()
     try:
         home = Path.home()
-    except RuntimeError:
-        home = Path("C:/") if sys_name == "windows" else Path("/tmp")
+    except Exception:
+        home = Path(tempfile.gettempdir())
 
     return home / ".gemini" / "config" / "projects"
 
@@ -173,8 +174,8 @@ def find_antigravity_executable() -> Optional[Path]:
 
     try:
         home = Path.home()
-    except RuntimeError:
-        home = Path("C:/") if sys_name == "windows" else Path("/tmp")
+    except Exception:
+        home = Path(tempfile.gettempdir())
 
     if sys_name == "linux":
         candidates = [

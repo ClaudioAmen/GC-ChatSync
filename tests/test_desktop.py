@@ -1,6 +1,8 @@
 """Unit tests for desktop shortcut integration."""
 
+import gc
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -30,7 +32,16 @@ class TestDesktopShortcut(unittest.TestCase):
         self.desktop_dir.mkdir(parents=True)
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        gc.collect()
+        try:
+            self.temp_dir.cleanup()
+        except PermissionError:
+            time.sleep(0.1)
+            gc.collect()
+            try:
+                self.temp_dir.cleanup()
+            except Exception:
+                pass
 
     @patch("shutil.which", return_value="/usr/bin/gc-chatsync")
     def test_get_linux_exec_command_system_path(self, _):
