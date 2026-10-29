@@ -190,6 +190,37 @@ class TestSyncRunner(unittest.TestCase):
         if sys.platform != "win32":
             self.assertTrue(kwargs.get("start_new_session"))
 
+    @patch("gc_chatsync.runner.is_antigravity_process_running", return_value=True)
+    @patch("gc_chatsync.drive.DriveClient.test_connection", return_value=True)
+    def test_push_force_bypasses_running_process(self, mock_conn, mock_running):
+        runner = SyncRunner(self.cfg)
+        # Without force: should return False because Antigravity is running
+        self.assertFalse(runner.push(force=False))
+
+        # With force: should bypass process check and attempt snapshot/push
+        with patch.object(runner.drive, "put_manifest") as mock_put, \
+             patch.object(runner.drive, "push_projects"), \
+             patch.object(runner.drive, "push_brain"), \
+             patch.object(runner.drive, "push_conversations"), \
+             patch.object(runner.drive, "push_summaries"), \
+             patch("gc_chatsync.merger.snapshot_db", return_value=True):
+            success = runner.push(force=True)
+            self.assertTrue(success)
+            self.assertTrue(mock_put.called)
+
+    @patch("gc_chatsync.runner.SyncRunner.launch_app", return_value=0)
+    @patch("gc_chatsync.runner.SyncRunner.pull", return_value=True)
+    @patch("gc_chatsync.runner.SyncRunner.push", return_value=False)
+    @patch("gc_chatsync.drive.DriveClient.get_manifest", return_value=None)
+    @patch("gc_chatsync.drive.DriveClient.put_manifest")
+    def test_run_postponed_push_returns_exit_code_2(
+        self, mock_put, mock_get_m, mock_push, mock_pull, mock_launch
+    ):
+        runner = SyncRunner(self.cfg)
+        code = runner.run()
+        # When Antigravity exited with 0 but push was postponed/failed, run returns code 2
+        self.assertEqual(code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

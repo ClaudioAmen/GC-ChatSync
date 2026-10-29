@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,24 +21,22 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("gc_chatsync.drive")
 
-# Standard file exclusion patterns for Antigravity data
+# Anchored file exclusion patterns for Antigravity data
 EXCLUDE_PATTERNS = [
     "*.db-wal",
     "*.db-shm",
     "installation_id",
     "antigravity_state.pbtxt",
-    "cache/**",
-    "crashes/**",
-    "presence/**",
-    "log/**",
-    ".backups/**",
-    "steps/**",
-    "tasks/**",
-    "messages/**",
-    "subagents/**",
-    "chunks/**",
-    ".tempmediaStorage/**",
-    "tempmediaStorage/**",
+    "**/.system_generated/steps/**",
+    "**/.system_generated/tasks/**",
+    "**/.system_generated/messages/**",
+    "**/.system_generated/subagents/**",
+    "**/.system_generated/logs/chunks/**",
+    "**/.system_generated/crashes/**",
+    "**/.system_generated/presence/**",
+    "**/.backups/**",
+    "**/.tempmediaStorage/**",
+    "**/tempmediaStorage/**",
 ]
 
 
@@ -51,11 +50,11 @@ class RcloneError(Exception):
 NOT_FOUND_CODES = {3, 4}
 
 RCLONE_PERF_FLAGS = [
-    "--checkers", "2",
-    "--transfers", "2",
-    "--drive-chunk-size", "32M",
-    "--tpslimit", "8",
-    "--drive-pacer-min-sleep", "50ms",
+    "--checkers", "16",
+    "--transfers", "8",
+    "--drive-chunk-size", "64M",
+    "--drive-pacer-min-sleep", "10ms",
+    "--drive-pacer-burst", "200",
 ]
 
 
@@ -78,6 +77,7 @@ class SyncManifest:
     version: int = 1
     active_device: Optional[str] = None
     active_since_utc: Optional[str] = None
+    active_heartbeat_utc: Optional[str] = None
     antigravity_version: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -92,6 +92,7 @@ class SyncManifest:
             version=int(data.get("version", 1)),
             active_device=data.get("active_device"),
             active_since_utc=data.get("active_since_utc"),
+            active_heartbeat_utc=data.get("active_heartbeat_utc"),
             antigravity_version=data.get("antigravity_version"),
         )
 
@@ -102,6 +103,7 @@ class SyncManifest:
         epoch: int = 1,
         active_device: Optional[str] = None,
         active_since_utc: Optional[str] = None,
+        active_heartbeat_utc: Optional[str] = None,
         antigravity_version: Optional[str] = None,
     ) -> SyncManifest:
         now_utc = datetime.now(timezone.utc).isoformat()
@@ -111,6 +113,7 @@ class SyncManifest:
             epoch=epoch,
             active_device=active_device,
             active_since_utc=active_since_utc,
+            active_heartbeat_utc=active_heartbeat_utc,
             antigravity_version=antigravity_version,
         )
 
@@ -122,6 +125,8 @@ class DriveClient:
         self.remote_name = remote_name
         self.remote_folder = remote_folder.strip("/")
         self._rclone_bin = self._find_rclone()
+        self._cached_manifest: Optional[SyncManifest] = None
+        self._cached_manifest_time: float = 0.0
 
     @staticmethod
     def _find_rclone() -> str:
@@ -154,6 +159,7 @@ class DriveClient:
             extra_kwargs["input"] = input_data
         else:
             extra_kwargs["stdin"] = subprocess.DEVNULL
+        t0 = time.perf_counter()
         try:
             res = subprocess.run(
                 cmd,
@@ -171,6 +177,10 @@ class DriveClient:
             return res.stdout
         except subprocess.TimeoutExpired as e:
             raise RcloneError(f"rclone command timed out after {timeout} seconds: {e}") from e
+        finally:
+            elapsed = time.perf_counter() - t0
+            cmd_action = args[0] if args else "unknown"
+            logger.debug(f"rclone {cmd_action} completed in {elapsed:.2f}s")
 
     def run_cmd_streaming(
         self,
@@ -259,13 +269,15 @@ class DriveClient:
         return "\n".join(all_lines)
 
     def test_connection(self) -> bool:
-        """Check if remote is accessible and authorized (fast directory ping without slow quota checks)."""
+        """Check if remote is accessible and authorized.
+        
+        Fetches the manifest with force_refresh=True, doubling as an auth/connectivity probe.
+        """
         try:
-            self.run_cmd(["lsf", self.remote_base, "--max-depth", "1", "--tpslimit", "8"], timeout=60, log_errors=False)
+            self.get_manifest(force_refresh=True)
             return True
         except RcloneError as e:
             if e.returncode in NOT_FOUND_CODES:
-                # Target folder does not exist yet on remote, but remote connection is verified
                 return True
             logger.warning(f"Google Drive connection test failed: {e}")
             return False
@@ -273,19 +285,29 @@ class DriveClient:
             logger.warning(f"Google Drive connection test failed: {e}")
             return False
 
-    def get_manifest(self) -> Optional[SyncManifest]:
+    def get_manifest(self, force_refresh: bool = False) -> Optional[SyncManifest]:
         """Fetch cloud manifest if it exists.
         
         Returns None if remote file does not exist (exit code 3 or 4).
         Raises RcloneError if network, auth, timeout, or JSON corruption occurred.
+        Caches manifest for 15s to avoid redundant round-trips within the same sync cycle.
         """
+        now = time.time()
+        if not force_refresh and self._cached_manifest_time and (now - self._cached_manifest_time < 15.0):
+            return self._cached_manifest
+
         remote_path = f"{self.remote_base}/manifest.json"
         try:
             output = self.run_cmd(["cat", remote_path], timeout=60, log_errors=False)
             data = json.loads(output)
-            return SyncManifest.from_dict(data)
+            manifest = SyncManifest.from_dict(data)
+            self._cached_manifest = manifest
+            self._cached_manifest_time = now
+            return manifest
         except RcloneError as e:
             if e.returncode in NOT_FOUND_CODES:
+                self._cached_manifest = None
+                self._cached_manifest_time = now
                 return None
             raise
         except json.JSONDecodeError as e:
@@ -300,6 +322,8 @@ class DriveClient:
             tmp_path = Path(f.name)
         try:
             self.run_cmd(["copyto", str(tmp_path), remote_path], timeout=60)
+            self._cached_manifest = manifest
+            self._cached_manifest_time = time.time()
             logger.info(f"Updated remote manifest (last_device={manifest.last_device}, epoch={manifest.epoch})")
         finally:
             try:

@@ -329,6 +329,33 @@ class TestDatabaseMerger(unittest.TestCase):
         self.assertTrue(target_snap.is_file())
         self.assertAlmostEqual(target_snap.stat().st_mtime, past_timestamp, places=1)
 
+    def test_needs_db_snapshot_evaluation(self):
+        import os
+        from gc_chatsync.merger import needs_db_snapshot
+
+        self._create_sample_db(self.local_db)
+        old_time = 1700000000.0
+        os.utime(self.local_db, (old_time, old_time))
+
+        last_push = 1700001000.0
+        # Case 1: Untouched file older than last push -> False
+        self.assertFalse(needs_db_snapshot(self.local_db, last_push_ts=last_push))
+
+        # Case 2: Untouched file, but first sync (last_push = 0) -> True
+        self.assertTrue(needs_db_snapshot(self.local_db, last_push_ts=0.0))
+
+        # Case 3: File modified recently -> True
+        recent_time = 1700002000.0
+        os.utime(self.local_db, (recent_time, recent_time))
+        self.assertTrue(needs_db_snapshot(self.local_db, last_push_ts=last_push))
+
+        # Case 4: File old, but active WAL journal exists -> True
+        os.utime(self.local_db, (old_time, old_time))
+        wal_file = self.local_db.with_name(self.local_db.name + "-wal")
+        wal_file.write_bytes(b"dummy-wal-content")
+        self.assertTrue(needs_db_snapshot(self.local_db, last_push_ts=last_push))
+        wal_file.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

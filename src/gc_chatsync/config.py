@@ -1,3 +1,7 @@
+"""Configuration management and platform-specific path detection for GC-ChatSync."""
+
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -74,6 +78,43 @@ def get_config_dir() -> Path:
 def get_config_file_path() -> Path:
     """Return the path to config.json."""
     return get_config_dir() / "config.json"
+
+
+def get_sync_state_file_path() -> Path:
+    """Return path to state.json used for tracking push timestamps."""
+    return get_config_dir() / "state.json"
+
+
+def get_last_push_timestamp() -> float:
+    """Return UNIX timestamp of the last successful push, or 0.0 if never pushed."""
+    state_file = get_sync_state_file_path()
+    if not state_file.is_file():
+        return 0.0
+    try:
+        with open(state_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return float(data.get("last_successful_push_ts", 0.0))
+    except Exception:
+        return 0.0
+
+
+def set_last_push_timestamp(ts: float) -> None:
+    """Persist UNIX timestamp of successful push to state.json."""
+    state_file = get_sync_state_file_path()
+    try:
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        if state_file.is_file():
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+        data["last_successful_push_ts"] = float(ts)
+        with open(state_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.debug(f"Could not persist last push timestamp: {e}")
 
 
 def get_logs_dir() -> Path:

@@ -99,12 +99,15 @@ class TestReconcileEngine(unittest.TestCase):
         self.assertEqual(rep.orphans_indexed, 1)
         self.assertEqual(len(rep.corrupt_files), 0)
 
-        # Verify index was updated
+        # Verify index was updated with Epoch 0 timestamp so cloud updates supersede it
         conn = sqlite3.connect(self.local_db)
         try:
-            row = conn.execute("SELECT preview FROM conversation_summaries WHERE conversation_id='orphan-1234';").fetchone()
+            row = conn.execute(
+                "SELECT preview, last_modified_time FROM conversation_summaries WHERE conversation_id='orphan-1234';"
+            ).fetchone()
             self.assertIsNotNone(row)
             self.assertIn("Restored Python Project", row[0])
+            self.assertTrue(row[1].startswith("1970-01-01"))
         finally:
             conn.close()
 

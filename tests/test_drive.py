@@ -34,7 +34,7 @@ class TestDriveClient(unittest.TestCase):
         mock_which.return_value = "/usr/bin/rclone"
         mock_res = MagicMock()
         mock_res.returncode = 0
-        mock_res.stdout = "folder1/\nfile1.txt"
+        mock_res.stdout = '{"last_device": "linux-pc", "last_sync_utc": "2026-10-28T16:00:00Z", "epoch": 1}'
         mock_run.return_value = mock_res
 
         client = DriveClient(remote_name="gdrive")
@@ -92,7 +92,7 @@ class TestDriveClient(unittest.TestCase):
         mock_which.return_value = "/usr/bin/rclone"
         mock_res = MagicMock()
         mock_res.returncode = 0
-        mock_res.stdout = "folder1/\nfile1.txt\n"
+        mock_res.stdout = '{"last_device": "linux-laptop", "last_sync_utc": "2026-10-28T16:00:00Z"}'
         mock_run.return_value = mock_res
 
         client = DriveClient(remote_name="gdrive")
@@ -114,14 +114,15 @@ class TestDriveClient(unittest.TestCase):
             client.pull_conversations(Path(tmp))
             client.pull_brain(Path(tmp))
 
-    def test_exclude_patterns_match_rclone_spec(self):
+    def test_exclude_patterns_are_anchored(self):
         from gc_chatsync.drive import EXCLUDE_PATTERNS
-        self.assertIn("steps/**", EXCLUDE_PATTERNS)
-        self.assertIn("tasks/**", EXCLUDE_PATTERNS)
-        self.assertIn("messages/**", EXCLUDE_PATTERNS)
-        self.assertIn("chunks/**", EXCLUDE_PATTERNS)
-        for pat in EXCLUDE_PATTERNS:
-            self.assertFalse(pat.startswith("**/"))
+        self.assertIn("**/.system_generated/steps/**", EXCLUDE_PATTERNS)
+        self.assertIn("**/.system_generated/tasks/**", EXCLUDE_PATTERNS)
+        self.assertIn("**/.system_generated/messages/**", EXCLUDE_PATTERNS)
+        self.assertIn("**/.system_generated/logs/chunks/**", EXCLUDE_PATTERNS)
+        # Verify unanchored root patterns are NOT present
+        self.assertNotIn("steps/**", EXCLUDE_PATTERNS)
+        self.assertNotIn("tasks/**", EXCLUDE_PATTERNS)
 
 
 if __name__ == "__main__":

@@ -188,11 +188,12 @@ def run_reconcile(
 
                         title = f"[Corrupted / Quarantined] {cid[:8]}"
                         preview = "Session database failed SQLite integrity check"
-                        ts = datetime.now(timezone.utc).isoformat()
+                        ts = "1970-01-01T00:00:00+00:00"
                     else:
                         title, preview, workspace = extract_session_preview(orphan)
-                        mtime = orphan.stat().st_mtime
-                        ts = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+                        # Reconstructed orphan records use Epoch 0 so that during cloud merges,
+                        # any authentic metadata record from another machine always takes precedence.
+                        ts = "1970-01-01T00:00:00+00:00"
 
                     row_data: Dict[str, Any] = {
                         "conversation_id": cid,
@@ -229,12 +230,13 @@ def run_reconcile(
             manifest = runner.drive.get_manifest()
             if manifest and manifest.active_device:
                 is_stale = False
-                if manifest.active_since_utc:
+                ref_time_str = manifest.active_heartbeat_utc or manifest.active_since_utc
+                if ref_time_str:
                     try:
-                        active_dt = datetime.fromisoformat(manifest.active_since_utc)
+                        active_dt = datetime.fromisoformat(ref_time_str)
                         now_dt = datetime.now(timezone.utc)
                         delta_sec = (now_dt - active_dt).total_seconds()
-                        if delta_sec > 900:  # 15 minutes
+                        if delta_sec > 900:  # 15 minutes of silence (no active heartbeat)
                             is_stale = True
                     except Exception:
                         is_stale = True
@@ -245,6 +247,7 @@ def run_reconcile(
                     device_stale = manifest.active_device
                     manifest.active_device = None
                     manifest.active_since_utc = None
+                    manifest.active_heartbeat_utc = None
                     runner.drive.put_manifest(manifest)
                     rep.stale_witness_cleared = True
                     rep.details.append(f"Cleared stale witness lock held by '{device_stale}'.")

@@ -27,6 +27,11 @@ class TestCLI(unittest.TestCase):
 
         args_push = parser.parse_args(["push"])
         self.assertEqual(args_push.command, "push")
+        self.assertFalse(args_push.force)
+
+        args_push_force = parser.parse_args(["push", "--force"])
+        self.assertEqual(args_push_force.command, "push")
+        self.assertTrue(args_push_force.force)
 
         args_status = parser.parse_args(["status"])
         self.assertEqual(args_status.command, "status")

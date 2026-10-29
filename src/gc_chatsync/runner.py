@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,7 +22,9 @@ from gc_chatsync.config import (
     find_antigravity_executable,
     get_antigravity_version,
     get_default_antigravity_projects_dir,
+    get_last_push_timestamp,
     get_system_name,
+    set_last_push_timestamp,
 )
 from gc_chatsync.drive import DriveClient, RcloneError, SyncManifest
 from gc_chatsync.lock import (
@@ -37,6 +40,7 @@ from gc_chatsync.merger import (
     create_backup,
     is_db_exclusive_accessible,
     merge_summaries_databases,
+    needs_db_snapshot,
     snapshot_db,
 )
 from gc_chatsync.project_mapper import (
@@ -61,9 +65,22 @@ def is_antigravity_process_running() -> bool:
                 timeout=5,
                 **kwargs,
             )
-            return "antigravity.exe" in out.lower()
+            is_running = "antigravity.exe" in out.lower()
+            if is_running:
+                logger.info("Detected running Antigravity process on Windows")
+            return is_running
         except Exception:
             return False
+
+    if sys.platform == "darwin":
+        try:
+            res = subprocess.run(["pgrep", "-x", "Antigravity"], stdout=subprocess.DEVNULL, timeout=5)
+            if res.returncode == 0:
+                logger.info("Detected running Antigravity process on macOS")
+                return True
+        except Exception:
+            pass
+        return False
 
     proc_dir = Path("/proc")
     if not proc_dir.is_dir():
@@ -78,10 +95,32 @@ def is_antigravity_process_running() -> bool:
                 cmdline = (entry / "cmdline").read_bytes()
                 if not cmdline:
                     continue
-                cmd_str = cmdline.replace(b"\x00", b" ").decode("utf-8", errors="ignore").lower()
-                if "antigravity" in cmd_str and "gc-chatsync" not in cmd_str and "python" not in cmd_str:
-                    if "/antigravity" in cmd_str or "antigravity.exe" in cmd_str or cmd_str.startswith("antigravity"):
-                        return True
+                parts = [p.decode("utf-8", errors="ignore") for p in cmdline.split(b"\x00") if p]
+                if not parts:
+                    continue
+
+                exe_name = Path(parts[0]).name.lower()
+                cmd_str = " ".join(parts).lower()
+
+                # Ignore our own python wrapper or test frameworks
+                if "gc-chatsync" in cmd_str or "unittest" in cmd_str or "pytest" in cmd_str:
+                    continue
+
+                resolved_exe = ""
+                try:
+                    resolved_exe = Path(os.readlink(entry / "exe")).name.lower()
+                except (OSError, PermissionError):
+                    pass
+
+                is_match = False
+                if exe_name in ("antigravity", "antigravity.exe"):
+                    is_match = True
+                elif resolved_exe in ("antigravity", "antigravity.exe"):
+                    is_match = True
+
+                if is_match:
+                    logger.info("Detected running Antigravity process (PID %d: %s)", pid, parts[0])
+                    return True
             except (OSError, PermissionError):
                 continue
     return False
@@ -298,10 +337,15 @@ class SyncRunner:
             conn.close()
             checkpoint_db(db_path)
 
-    def push(self, progress_cb: Optional[Callable[[int, str], None]] = None) -> bool:
+    def push(
+        self,
+        progress_cb: Optional[Callable[[int, str], None]] = None,
+        force: bool = False,
+    ) -> bool:
         """Push local conversations, projects, and merged index to Google Drive.
         
         Protected by ProcessLock. Updates monotonic epoch and clears dirty session flag.
+        If force=True, skips active Antigravity process checks (DB lock checks remain active).
         """
         def report(pct: int, msg: str) -> None:
             if progress_cb and callable(progress_cb):
@@ -318,12 +362,15 @@ class SyncRunner:
                 return False
 
             # Verify that Antigravity is not still running
-            if is_antigravity_process_running():
+            if not force and is_antigravity_process_running():
                 logger.warning("Antigravity process is still running. Postponing push to protect database integrity.")
                 return False
 
+            last_push_ts = get_last_push_timestamp()
+            push_start_time = time.time()
+
             # Verify that databases are not locked by background processes
-            if not are_all_dbs_accessible(self.data_dir, timeout=2.0):
+            if not are_all_dbs_accessible(self.data_dir, timeout=2.0, last_push_ts=last_push_ts):
                 logger.warning("Databases are still locked by background processes. Postponing push to protect integrity.")
                 return False
 
@@ -340,20 +387,26 @@ class SyncRunner:
                         logger.warning("Could not snapshot conversation_summaries.db. Postponing push.")
                         return False
 
-                # 2. Snapshot conversation databases
+                # 2. Snapshot only modified conversation databases (or all on first run)
                 conv_dir = self.data_dir / "conversations"
                 staged_conv_dir = tmp_path / "conversations"
+                modified_convs = 0
                 if conv_dir.is_dir():
                     staged_conv_dir.mkdir(parents=True, exist_ok=True)
                     for db_file in conv_dir.glob("*.db"):
-                        target_snap = staged_conv_dir / db_file.name
-                        if not snapshot_db(db_file, target_snap):
-                            logger.warning(f"Could not snapshot {db_file.name}. Postponing push.")
-                            return False
+                        if needs_db_snapshot(db_file, last_push_ts):
+                            target_snap = staged_conv_dir / db_file.name
+                            if not snapshot_db(db_file, target_snap):
+                                logger.warning(f"Could not snapshot {db_file.name}. Postponing push.")
+                                return False
+                            modified_convs += 1
 
                 report(50, "Uploading conversations, brain artifacts, and projects...")
                 brain_dir = self.data_dir / "brain"
-                logger.info("Uploading conversations, brain, and projects concurrently...")
+                logger.info(
+                    "Uploading changes concurrently (modified conversations: %d)...",
+                    modified_convs,
+                )
 
                 def on_conv_push(sub_msg: str):
                     report(60, f"[Upload Conversations] {sub_msg}")
@@ -361,9 +414,9 @@ class SyncRunner:
                 def on_brain_push(sub_msg: str):
                     report(75, f"[Upload Brain] {sub_msg}")
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                     futures = []
-                    if staged_conv_dir.is_dir():
+                    if staged_conv_dir.is_dir() and modified_convs > 0:
                         futures.append(executor.submit(self.drive.push_conversations, staged_conv_dir, on_conv_push))
                     if brain_dir.is_dir():
                         futures.append(executor.submit(self.drive.push_brain, brain_dir, on_brain_push))
@@ -393,11 +446,13 @@ class SyncRunner:
                     epoch=next_epoch,
                     active_device=None,
                     active_since_utc=None,
+                    active_heartbeat_utc=None,
                     antigravity_version=get_antigravity_version(self.config.antigravity_bin_path),
                 )
                 self.drive.put_manifest(new_manifest)
 
-                # 5. Clear dirty state flag
+                # 5. Persist push timestamp and clear dirty state flag
+                set_last_push_timestamp(push_start_time)
                 clear_session_dirty()
                 logger.info(f"Sync complete! State updated to '{self.config.device_id}' (epoch {next_epoch}).")
                 report(100, "Upload completed successfully!")
@@ -436,6 +491,21 @@ class SyncRunner:
         else:
             popen_kwargs["start_new_session"] = True
 
+        stop_heartbeat = threading.Event()
+
+        def _heartbeat_worker():
+            while not stop_heartbeat.wait(timeout=120):
+                try:
+                    m = self.drive.get_manifest(force_refresh=True)
+                    if m and m.active_device == self.config.device_id:
+                        m.active_heartbeat_utc = datetime.now(timezone.utc).isoformat()
+                        self.drive.put_manifest(m)
+                        logger.debug("Cloud witness heartbeat refreshed.")
+                except Exception as hb_err:
+                    logger.debug(f"Witness heartbeat error: {hb_err}")
+
+        hb_thread = threading.Thread(target=_heartbeat_worker, daemon=True)
+
         try:
             proc = subprocess.Popen(cmd, **popen_kwargs)
             if on_launched and callable(on_launched):
@@ -443,6 +513,8 @@ class SyncRunner:
                     on_launched()
                 except Exception as cb_err:
                     logger.debug(f"on_launched callback error: {cb_err}")
+
+            hb_thread.start()
             proc.wait()
 
             # Wait for all child and helper Antigravity processes to exit
@@ -456,6 +528,8 @@ class SyncRunner:
         except Exception as e:
             logger.error(f"Failed to launch Antigravity: {e}")
             return 1
+        finally:
+            stop_heartbeat.set()
 
     def run(self, extra_args: Optional[list[str]] = None) -> int:
         """Full lifecycle: PULL -> LAUNCH -> PUSH with concurrency locking and dirty session recovery."""
@@ -552,6 +626,10 @@ class SyncRunner:
             push_success = self.push()
             if push_success:
                 clear_session_dirty()
-
-            print("🌌 [GC-ChatSync] All done!")
-            return exit_code
+                print("🌌 [GC-ChatSync] All done!")
+                return exit_code
+            else:
+                logger.warning("Push was postponed or failed. Local session remains dirty.")
+                print("⚠️ [GC-ChatSync] Push postponed or incomplete. Local changes are preserved.")
+                print("   They will automatically synchronize on the next online launch.")
+                return 2 if exit_code == 0 else exit_code

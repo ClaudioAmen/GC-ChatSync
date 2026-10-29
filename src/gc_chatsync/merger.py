@@ -80,8 +80,38 @@ def is_db_exclusive_accessible(db_path: Path, timeout: float = 2.0) -> bool:
         return False
 
 
-def are_all_dbs_accessible(data_dir: Path, timeout: float = 0.5) -> bool:
-    """Verify that all conversation databases and the summaries database are free of active locks."""
+def needs_db_snapshot(db_path: Path, last_push_ts: float = 0.0) -> bool:
+    """Determine if a SQLite conversation database has changed since last push.
+    
+    Returns True if:
+    - WAL or SHM journal exists and is non-empty (active uncommitted or pending writes).
+    - File modification timestamp is newer than last_push_ts (with 5-second safety margin).
+    - last_push_ts <= 0.0 (first run or unknown state).
+    """
+    if not db_path.is_file():
+        return False
+    wal = db_path.with_name(db_path.name + "-wal")
+    if wal.exists() and wal.stat().st_size > 0:
+        return True
+    shm = db_path.with_name(db_path.name + "-shm")
+    if shm.exists() and shm.stat().st_size > 0:
+        return True
+    if last_push_ts <= 0.0:
+        return True
+    try:
+        # 5-second margin for filesystem timestamp resolution and clock skew
+        return db_path.stat().st_mtime > (last_push_ts - 5.0)
+    except OSError:
+        return True
+
+
+def are_all_dbs_accessible(
+    data_dir: Path, timeout: float = 0.5, last_push_ts: float = 0.0
+) -> bool:
+    """Verify that conversation databases and the summaries database are free of active locks.
+    
+    If last_push_ts > 0.0, only checks databases that were modified or have active WAL journals.
+    """
     local_db = data_dir / "conversation_summaries.db"
     if not is_db_exclusive_accessible(local_db, timeout=timeout):
         return False
@@ -89,8 +119,9 @@ def are_all_dbs_accessible(data_dir: Path, timeout: float = 0.5) -> bool:
     conv_dir = data_dir / "conversations"
     if conv_dir.is_dir():
         for db_file in conv_dir.glob("*.db"):
-            if not is_db_exclusive_accessible(db_file, timeout=timeout):
-                return False
+            if needs_db_snapshot(db_file, last_push_ts):
+                if not is_db_exclusive_accessible(db_file, timeout=timeout):
+                    return False
     return True
 
 

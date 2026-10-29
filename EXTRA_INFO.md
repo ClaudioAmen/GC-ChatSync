@@ -23,10 +23,33 @@ GC-ChatSync/
 | **Windows** | `%USERPROFILE%\.gemini\antigravity` | `%USERPROFILE%\.gemini\config\projects` | `%USERPROFILE%\.config\gc-chatsync\` |
 
 ### Automatic Exclusions
-To optimize transfer speeds and prevent lock contention, the following transient files are automatically excluded:
-- SQLite journal files: `*.db-wal`, `*.db-shm`
-- Machine-specific hardware tokens: `installation_id`, `antigravity_state.pbtxt`
-- Temporary and cache files: `cache/**`, `crashes/**`, `presence/**`, `log/**`, `.backups/**`, `tempmediaStorage/**`
+To optimize transfer speeds, minimize Google Drive API round-trips, and prevent lock contention, the following files and folders are excluded using anchored filters:
+- **SQLite journal files:** `*.db-wal`, `*.db-shm` (temporary write-ahead logs and shared memory locks flushed prior to snapshot).
+- **Machine-specific tokens:** `installation_id`, `antigravity_state.pbtxt` (hardware/installation identifiers unique to each physical machine).
+- **Session execution outputs:** `**/.system_generated/steps/**`, `**/.system_generated/tasks/**`, `**/.system_generated/messages/**`, `**/.system_generated/subagents/**` (thousands of individual raw tool output text files; high-level session history in `transcript.jsonl` and database tables is fully synchronized).
+- **Chunk caches and diagnostics:** `**/.system_generated/logs/chunks/**`, `**/.system_generated/crashes/**`, `**/.system_generated/presence/**` (ephemeral log fragments and telemetry).
+- **Local backups and media buffers:** `**/.backups/**`, `**/.tempmediaStorage/**`, `**/tempmediaStorage/**` (local safety snapshots and transient media buffers).
+
+---
+
+## ⚡ Performance Architecture & Dedicated OAuth
+
+1. **Selective Database Snapshotting:**
+   - Previous versions created snapshots and checked exclusive write locks across all conversation databases on every exit.
+   - GC-ChatSync now inspects `needs_db_snapshot`: if a database has no active `-wal` journal and its `mtime` is older than the last successful push, snapshotting, lock-checking, and upload are skipped entirely. Only active or newly modified sessions (~1–2 databases) are staged and copied.
+
+2. **Dedicated OAuth Tuning:**
+   - Because personal Google Cloud OAuth credentials provide dedicated per-user quota (10,000 queries / 100s), rclone operations run with high concurrency:
+     - `--checkers 16 --transfers 8` for fast parallel directory scans and uploads.
+     - `--drive-chunk-size 64M` for multi-megabyte database streaming.
+     - `--drive-pacer-min-sleep 10ms --drive-pacer-burst 200` to eliminate artificial delays.
+
+3. **Round-Trip Reduction & Manifest Caching:**
+   - The cloud manifest (`manifest.json`) serves directly as the connectivity and authentication probe, eliminating redundant directory listings (`lsf`).
+   - Manifest responses are cached in-memory during a sync lifecycle to prevent repeated network round-trips between pull, witness claiming, and launching.
+
+4. **Active Witness Heartbeat:**
+   - During long coding sessions, a background thread refreshes `active_heartbeat_utc` every 2 minutes. This ensures sessions lasting longer than 15 minutes are never mistaken for abandoned or stale sessions by other machines.
 
 ---
 

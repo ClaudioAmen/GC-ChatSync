@@ -123,7 +123,8 @@ def cmd_push(args: argparse.Namespace) -> int:
     """Execute manual push to Google Drive."""
     cfg = load_config()
     runner = SyncRunner(cfg)
-    success = runner.push()
+    force = getattr(args, "force", False)
+    success = runner.push(force=force)
     return 0 if success else 1
 
 
@@ -253,10 +254,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_pull.add_argument("-f", "--force", action="store_true", help="Force pull even if this device was the last updater.")
 
     # Command: push
-    subparsers.add_parser(
+    p_push = subparsers.add_parser(
         "push",
         parents=[common_parser],
         help="Push local conversations, brain artifacts, and projects to Google Drive.",
+    )
+    p_push.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="Force push, skipping active Antigravity process detection (database locks are still verified).",
     )
 
     # Command: status
