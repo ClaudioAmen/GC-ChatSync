@@ -170,8 +170,9 @@ class TestSyncRunner(unittest.TestCase):
         self.assertEqual(status.active_device, "windows-desktop")
         self.assertEqual(status.active_since_utc, "2026-10-28T18:30:00Z")
 
+    @patch("gc_chatsync.runner.is_antigravity_process_running", return_value=False)
     @patch("subprocess.Popen")
-    def test_launch_app_calls_on_launched(self, mock_popen):
+    def test_launch_app_calls_on_launched(self, mock_popen, mock_running):
         mock_proc = mock_popen.return_value
         mock_proc.wait.return_value = 0
         mock_proc.returncode = 0
