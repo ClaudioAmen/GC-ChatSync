@@ -25,6 +25,7 @@ class Palette:
     name: str
     bg: str
     surface: str
+    surface_alt: str
     border: str
     fg: str
     muted: str
@@ -33,49 +34,63 @@ class Palette:
     accent_fg: str
     button: str
     button_hover: str
+    button_border: str
     success: str
+    success_bg: str
     warning: str
+    warning_bg: str
     error: str
+    error_bg: str
     log_bg: str
     log_fg: str
 
 
 DARK_PALETTE = Palette(
     name=DARK,
-    bg="#1e1f22",
-    surface="#2b2d31",
-    border="#3a3c42",
-    fg="#e6e6e6",
-    muted="#9aa0a6",
-    accent="#4f8cff",
-    accent_hover="#6a9dff",
+    bg="#111318",
+    surface="#1a1d24",
+    surface_alt="#21252e",
+    border="#2c313c",
+    fg="#f0f2f5",
+    muted="#8b949e",
+    accent="#3b82f6",
+    accent_hover="#60a5fa",
     accent_fg="#ffffff",
-    button="#383a40",
-    button_hover="#45474e",
-    success="#4caf50",
-    warning="#ffb74d",
-    error="#ef5350",
-    log_bg="#16171a",
-    log_fg="#d4d4d4",
+    button="#262b36",
+    button_hover="#323846",
+    button_border="#373e4d",
+    success="#3fb950",
+    success_bg="#142d1e",
+    warning="#f59e0b",
+    warning_bg="#2f2412",
+    error="#f85149",
+    error_bg="#32181a",
+    log_bg="#0d0f13",
+    log_fg="#d1d5db",
 )
 
 LIGHT_PALETTE = Palette(
     name=LIGHT,
-    bg="#f5f6f8",
+    bg="#f3f5f8",
     surface="#ffffff",
-    border="#d9dce1",
-    fg="#1f2328",
-    muted="#5f6368",
-    accent="#2f6fed",
-    accent_hover="#4a82f0",
+    surface_alt="#f8fafc",
+    border="#dce1e8",
+    fg="#111827",
+    muted="#64748b",
+    accent="#2563eb",
+    accent_hover="#3b82f6",
     accent_fg="#ffffff",
-    button="#e9ebef",
-    button_hover="#dcdfe5",
-    success="#2e7d32",
-    warning="#e65100",
-    error="#c62828",
-    log_bg="#fafbfc",
-    log_fg="#24292f",
+    button="#eef2f6",
+    button_hover="#e2e8f0",
+    button_border="#cbd5e1",
+    success="#16a34a",
+    success_bg="#dcfce7",
+    warning="#d97706",
+    warning_bg="#fef3c7",
+    error="#dc2626",
+    error_bg="#fee2e2",
+    log_bg="#f8fafc",
+    log_fg="#1e293b",
 )
 
 

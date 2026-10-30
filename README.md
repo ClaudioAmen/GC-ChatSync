@@ -122,28 +122,6 @@ gc-chatsync restore-backup   # ⏪ Revert index to the latest pre-merge snapshot
 
 ## 🛠️ How It Works
 
-```mermaid
-flowchart LR
-    subgraph PullPhase ["1. Pull Phase"]
-        A["Inspect Cloud Manifest"] --> B["Download Deltas (Parallel)"]
-        B --> C["Pre-merge DB Backup"]
-        C --> D["Row-Level SQLite Merge"]
-    end
-    
-    subgraph ExecutionPhase ["2. Antigravity Active"]
-        D --> E["Launch Antigravity"]
-        E --> F["Witness Heartbeat Thread"]
-    end
-
-    subgraph PushPhase ["3. Push Phase (On Exit)"]
-        F --> G["Wait for SQLite Locks"]
-        G --> H["Checkpoint WAL Journals"]
-        H --> I["Atomic Snapshot Only Modified DBs"]
-        I --> J["Upload Conversations & Brain"]
-        J --> K["Upload Manifest Strictly Last"]
-    end
-```
-
 1. **Before Launch (PULL):** Inspects the cloud manifest. If updates exist, downloads deltas via `rclone` (using parallel workers), creates an atomic SQLite backup in `.backups/`, and merges `conversation_summaries.db` incrementally.
 2. **Execution:** Launches Antigravity and runs an epoch-guarded witness heartbeat thread. (If offline, launches in safe local mode, marks the session dirty for subsequent recovery, and suppresses the push on exit).
 3. **On Close (PUSH):** Checkpoints SQLite WAL journals, takes crash-safe database snapshots, uploads modified sessions and brain artifacts to Drive, updates the manifest revision epoch, and clears the dirty flag.

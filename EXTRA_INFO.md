@@ -20,7 +20,7 @@ GC-ChatSync/
 | Operating System | Antigravity Data (`data_dir`) | Projects Directory (`projects_dir`) | GC-ChatSync Config & Logs |
 | :--- | :--- | :--- | :--- |
 | **Linux** | `~/.gemini/antigravity` | `~/.gemini/config/projects` | `~/.config/gc-chatsync/` |
-| **Windows** | `%USERPROFILE%\.gemini\antigravity` | `%USERPROFILE%\.gemini\config\projects` | `%USERPROFILE%\.config\gc-chatsync\` |
+| **Windows** | `%USERPROFILE%\.gemini\antigravity` | `%USERPROFILE%\.gemini\config\projects` | `%APPDATA%\gc-chatsync\` |
 
 ### Automatic Exclusions
 To optimize transfer speeds, minimize Google Drive API round-trips, and prevent lock contention, the following files and folders are excluded using anchored filters:
@@ -131,9 +131,9 @@ When configuring Google Drive via `rclone config`, two permission scopes are ava
 
 ## 🩺 Doctor & Self-Healing Diagnostics (`reconcile`)
 
-Run `gc-chatsync reconcile` when you need to audit or repair local and cloud states:
+Run `gc-chatsync reconcile` (or `gc-chatsync doctor`) when you need to audit or repair local and cloud states:
 - **Unindexed Session Recovery:** Scans `conversations/*.db` for valid sessions not present in `conversation_summaries.db` and re-indexes them automatically.
-- **Corrupt File Quarantine:** Inspects local databases for SQLite corruption and quarantines broken files into `.corrupt/`.
+- **Corrupt File Quarantine:** Inspects local databases for SQLite corruption and quarantines broken files into `.backups/corrupted/`.
 - **Stale Lock Recovery:** If a previous process was killed abruptly, witness locks older than 15 minutes of inactivity are safely cleared.
 - **Manifest Integrity & Repair:** Validates `manifest.json` parsing. In case of cloud file corruption, recovers state from `manifest.json.bak` or reconstructs a clean token via `gc-chatsync doctor --repair-manifest`.
 
@@ -142,8 +142,8 @@ Run `gc-chatsync reconcile` when you need to audit or repair local and cloud sta
 ## 📋 System Logs & Diagnostics
 
 Persistent logs are recorded with automatic 5MB rotation:
-- **Linux:** `~/.config/gc-chatsync/logs/sync.log`
-- **Windows:** `%USERPROFILE%\.config\gc-chatsync\logs\sync.log`
+- **Linux:** `~/.config/gc-chatsync/logs/sync.log` (and `reconcile.log`)
+- **Windows:** `%APPDATA%\gc-chatsync\logs\sync.log` (and `reconcile.log`)
 
 Run with verbose logging for detailed step-by-step diagnostics:
 ```bash

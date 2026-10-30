@@ -423,7 +423,7 @@ def _cmd_restore_backup(args: argparse.Namespace) -> int:
         return 2
 
     cfg = load_config()
-    db_path = cfg.antigravity_data_dir / "conversation_summaries.db"
+    db_path = Path(cfg.antigravity_data_dir).resolve() / "conversation_summaries.db"
     success, msg, backup_path = restore_latest_backup(db_path)
 
     if success:

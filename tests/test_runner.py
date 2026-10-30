@@ -30,6 +30,13 @@ class TestSyncRunner(unittest.TestCase):
 
         self.patch_cfg_dir = patch("gc_chatsync.lock.get_config_dir", return_value=self.config_dir)
         self.patch_cfg_dir.start()
+        self.patch_config_cfg_dir = patch("gc_chatsync.config.get_config_dir", return_value=self.config_dir)
+        self.patch_config_cfg_dir.start()
+
+        self.projects_dir = (self.tmp_path / "projects").resolve()
+        self.projects_dir.mkdir()
+        self.patch_proj_dir = patch("gc_chatsync.runner.get_default_antigravity_projects_dir", return_value=self.projects_dir)
+        self.patch_proj_dir.start()
 
         rclone_dummy = "rclone.exe" if sys.platform == "win32" else "/usr/bin/rclone"
         self.patch_which = patch("shutil.which", return_value=rclone_dummy)
@@ -52,6 +59,8 @@ class TestSyncRunner(unittest.TestCase):
         clear_session_dirty()
         self.patch_lock.stop()
         self.patch_which.stop()
+        self.patch_proj_dir.stop()
+        self.patch_config_cfg_dir.stop()
         self.patch_cfg_dir.stop()
         gc.collect()
         try:
@@ -129,13 +138,44 @@ class TestSyncRunner(unittest.TestCase):
         finally:
             conn2.close()
 
+    def test_translate_local_db_workspace_uris_uses_custom_mappings(self):
+        db_path = self.data_dir / "conversation_summaries.db"
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("""
+                CREATE TABLE conversation_summaries (
+                    conversation_id TEXT PRIMARY KEY,
+                    workspace_uris TEXT NOT NULL DEFAULT ''
+                );
+            """)
+            conn.execute("""
+                INSERT INTO conversation_summaries VALUES
+                ('cid-custom', '["file:///D:/Progetti/gc-chatsync"]');
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.cfg.workspace_path_mappings = {"D:/Progetti": "/home/user/Documents/progetti"}
+        runner = SyncRunner(self.cfg)
+        with patch("gc_chatsync.runner.get_system_name", return_value="linux"):
+            runner._translate_local_db_workspace_uris(db_path)
+
+        conn2 = sqlite3.connect(db_path)
+        try:
+            row = conn2.execute("SELECT workspace_uris FROM conversation_summaries WHERE conversation_id='cid-custom'").fetchone()
+            self.assertEqual(row[0], '["file:///home/user/Documents/progetti/gc-chatsync"]')
+        finally:
+            conn2.close()
+
     @patch("gc_chatsync.runner.is_session_dirty")
     @patch("gc_chatsync.drive.DriveClient.get_manifest")
+    @patch("gc_chatsync.drive.DriveClient.put_manifest")
     @patch("gc_chatsync.runner.SyncRunner.pull")
     @patch("gc_chatsync.runner.SyncRunner.push")
     @patch("gc_chatsync.runner.SyncRunner.launch_app")
     def test_run_recovers_dirty_session_with_pull_when_cloud_ahead(
-        self, mock_launch, mock_push, mock_pull, mock_manifest, mock_dirty
+        self, mock_launch, mock_push, mock_pull, mock_put, mock_manifest, mock_dirty
     ):
         mock_dirty.return_value = True
         mock_manifest.return_value = SyncManifest(
@@ -401,6 +441,7 @@ class TestSyncRunner(unittest.TestCase):
             self.assertTrue(mock_put.called)
             saved = mock_put.call_args[0][0]
             self.assertIsNotNone(saved.active_heartbeat_utc)
+            self.assertEqual(mock_put.call_args[1].get("update_backup"), False)
 
         # Case 2: active_device belongs to a different device
         manifest_other = SyncManifest(
@@ -429,6 +470,22 @@ class TestSyncRunner(unittest.TestCase):
             res = runner._run_heartbeat_step(session_epoch=2)
             self.assertFalse(res)
             mock_put.assert_not_called()
+
+    def test_claim_active_witness_sets_session_epoch_and_skips_backup(self):
+        runner = SyncRunner(self.cfg)
+        existing = SyncManifest(
+            last_device="windows-pc",
+            last_sync_utc="2026-10-28T12:00:00Z",
+            epoch=7,
+        )
+        with patch.object(runner.drive, "put_manifest") as mock_put:
+            runner.claim_active_witness(existing)
+            self.assertEqual(runner._current_session_epoch, 7)
+            self.assertTrue(mock_put.called)
+            witness = mock_put.call_args[0][0]
+            self.assertEqual(witness.active_device, "test-laptop")
+            self.assertEqual(witness.epoch, 7)
+            self.assertEqual(mock_put.call_args[1].get("update_backup"), False)
 
 
 if __name__ == "__main__":

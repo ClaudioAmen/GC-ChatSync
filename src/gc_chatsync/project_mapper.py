@@ -17,6 +17,30 @@ from urllib.parse import unquote, urlparse
 
 logger = logging.getLogger("gc_chatsync.project_mapper")
 
+# Deduplicate debug messages for outside-home URIs during a session
+_LOGGED_UNTRANSLATED_URIS: set[str] = set()
+
+
+def _is_windows_path(path_str: str) -> bool:
+    """Return True if path_str looks like a Windows drive path (e.g. C:/...)."""
+    return bool(re.match(r"^[a-zA-Z]:(?:/|$)", path_str))
+
+
+def _matches_prefix(raw_path: str, prefix: str, case_insensitive: bool = False) -> Optional[str]:
+    """If raw_path equals prefix or starts with prefix + '/', return the relative remainder."""
+    if case_insensitive:
+        p_cmp = raw_path.lower()
+        pref_cmp = prefix.lower()
+    else:
+        p_cmp = raw_path
+        pref_cmp = prefix
+
+    if p_cmp == pref_cmp:
+        return ""
+    if p_cmp.startswith(pref_cmp + "/"):
+        return raw_path[len(prefix) + 1:]
+    return None
+
 
 def normalize_to_forward_slashes(path_str: str) -> str:
     """Ensure path uses forward slashes."""
@@ -74,15 +98,29 @@ def translate_file_uri(
 
     raw_path = extract_path_from_file_uri(uri)
 
-    # 1. Check user-defined custom root mappings first
+    # 1. Check user-defined custom root mappings first (bidirectional: key -> value or value -> key)
     if custom_mappings:
         for src_prefix, dst_prefix in custom_mappings.items():
             norm_src = normalize_to_forward_slashes(src_prefix).rstrip("/")
             norm_dst = normalize_to_forward_slashes(dst_prefix).rstrip("/")
-            if raw_path.startswith(norm_src):
-                rel = raw_path[len(norm_src):].lstrip("/")
-                new_path = f"{norm_dst}/{rel}" if rel else norm_dst
-                return path_to_file_uri(new_path, target_os)
+            if not norm_src or not norm_dst:
+                continue
+
+            # Direction 1: raw_path starts with norm_src -> map to norm_dst
+            rel_fwd = _matches_prefix(raw_path, norm_src, case_insensitive=_is_windows_path(norm_src))
+            if rel_fwd is not None:
+                dst_is_win = _is_windows_path(norm_dst)
+                if (target_os == "windows" and dst_is_win) or (target_os != "windows" and not dst_is_win):
+                    new_path = f"{norm_dst}/{rel_fwd}" if rel_fwd else norm_dst
+                    return path_to_file_uri(new_path, target_os)
+
+            # Direction 2: raw_path starts with norm_dst -> map to norm_src
+            rel_rev = _matches_prefix(raw_path, norm_dst, case_insensitive=_is_windows_path(norm_dst))
+            if rel_rev is not None:
+                src_is_win = _is_windows_path(norm_src)
+                if (target_os == "windows" and src_is_win) or (target_os != "windows" and not src_is_win):
+                    new_path = f"{norm_src}/{rel_rev}" if rel_rev else norm_src
+                    return path_to_file_uri(new_path, target_os)
 
     # 2. Determine target home directory
     if target_home is None:
@@ -128,7 +166,9 @@ def translate_file_uri(
             return path_to_file_uri(new_path, "windows")
 
     # If it cannot be relativized to home and no custom mapping applies, preserve original
-    logger.debug(f"URI outside standard home directories, preserving: {uri}")
+    if uri not in _LOGGED_UNTRANSLATED_URIS:
+        _LOGGED_UNTRANSLATED_URIS.add(uri)
+        logger.debug(f"URI outside standard home directories, preserving: {uri}")
     return uri
 
 

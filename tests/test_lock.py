@@ -112,6 +112,20 @@ class TestProcessLock(unittest.TestCase):
         clear_session_dirty()
         self.assertFalse(is_session_dirty())
 
+    @patch("gc_chatsync.lock.get_system_name", return_value="windows")
+    @patch("subprocess.run")
+    def test_windows_is_pid_running_csv_fallback_exact_match(self, mock_run, mock_sys):
+        from unittest.mock import MagicMock
+        res = MagicMock()
+        res.stdout = '"python.exe","12345","Console","1","15,000 K"\n'
+        mock_run.return_value = res
+
+        # Simulate ctypes failure to trigger tasklist CSV fallback
+        with patch.dict("sys.modules", {"ctypes": None}):
+            self.assertTrue(is_pid_running(12345))
+            # Substring PID (e.g. 123) must NOT falsely match PID 12345
+            self.assertFalse(is_pid_running(123))
+
 
 if __name__ == "__main__":
     unittest.main()

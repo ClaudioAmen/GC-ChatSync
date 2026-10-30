@@ -97,6 +97,23 @@ class TestDriveClient(unittest.TestCase):
 
     @patch("shutil.which")
     @patch("subprocess.run")
+    def test_put_manifest_skips_backup_when_update_backup_false(self, mock_run, mock_which):
+        mock_which.return_value = "/usr/bin/rclone"
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_run.return_value = mock_res
+
+        client = DriveClient(remote_name="gdrive")
+        m = SyncManifest(last_device="linux-laptop", last_sync_utc="2026-10-28T16:30:00Z")
+        client.put_manifest(m, update_backup=False)
+
+        all_calls = [call[0][0] for call in mock_run.call_args_list]
+        self.assertEqual(len(all_calls), 1)
+        self.assertIn("copyto", all_calls[0])
+        self.assertIn("gdrive:GC-ChatSync/manifest.json", all_calls[0])
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
     def test_get_manifest_corrupted_raises_manifest_corrupted_error(self, mock_run, mock_which):
         mock_which.return_value = "/usr/bin/rclone"
         mock_res = MagicMock()

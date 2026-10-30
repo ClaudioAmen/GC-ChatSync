@@ -301,7 +301,11 @@ class SyncRunner:
                                 continue
                             with open(proj_file, "r", encoding="utf-8") as f:
                                 raw_data = json.load(f)
-                            translated_data = translate_project_json(raw_data, target_os=current_os)
+                            translated_data = translate_project_json(
+                                raw_data,
+                                target_os=current_os,
+                                custom_mappings=self.config.workspace_path_mappings,
+                            )
                             with open(target_file, "w", encoding="utf-8") as f:
                                 json.dump(translated_data, f, indent=2)
                             logger.debug(f"Translated and saved project definition: {target_file.name}")
@@ -338,7 +342,11 @@ class SyncRunner:
                 "SELECT conversation_id, workspace_uris FROM conversation_summaries WHERE workspace_uris != '';"
             ).fetchall()
             for cid, uris_str in rows:
-                translated = translate_workspace_uris_string(uris_str, target_os=current_os)
+                translated = translate_workspace_uris_string(
+                    uris_str,
+                    target_os=current_os,
+                    custom_mappings=self.config.workspace_path_mappings,
+                )
                 if translated != uris_str:
                     cursor.execute(
                         "UPDATE conversation_summaries SET workspace_uris = ? WHERE conversation_id = ?;",
@@ -509,6 +517,30 @@ class SyncRunner:
                 report(0, f"Push postponed: {push_err}")
                 return False
 
+    def claim_active_witness(self, manifest: Optional[SyncManifest] = None) -> None:
+        """Record this device as the active session witness in the cloud manifest."""
+        if manifest is None:
+            try:
+                manifest = self.drive.get_manifest()
+            except Exception as e:
+                logger.debug(f"Could not fetch manifest before claiming witness: {e}")
+
+        curr_epoch = manifest.epoch if manifest else 1
+        self._current_session_epoch = curr_epoch
+        try:
+            curr_last = manifest.last_device if manifest else ""
+            witness_manifest = SyncManifest(
+                last_device=curr_last,
+                last_sync_utc=manifest.last_sync_utc if manifest else "",
+                epoch=curr_epoch,
+                active_device=self.config.device_id,
+                active_since_utc=datetime.now(timezone.utc).isoformat(),
+                antigravity_version=get_antigravity_version(self.config.antigravity_bin_path),
+            )
+            self.drive.put_manifest(witness_manifest, update_backup=False)
+        except Exception as e:
+            logger.debug(f"Could not claim active witness: {e}")
+
     def _run_heartbeat_step(self, session_epoch: Optional[int]) -> bool:
         """Execute one heartbeat cycle. Returns True on success, False if preempted or error occurred."""
         try:
@@ -526,7 +558,7 @@ class SyncRunner:
                 )
                 return False
             m.active_heartbeat_utc = datetime.now(timezone.utc).isoformat()
-            self.drive.put_manifest(m)
+            self.drive.put_manifest(m, update_backup=False)
             logger.debug("Cloud witness heartbeat refreshed.")
             return True
         except Exception as hb_err:
@@ -687,21 +719,7 @@ class SyncRunner:
                     return 0
 
             # Claim active witness in cloud
-            curr_epoch = manifest.epoch if manifest else 1
-            self._current_session_epoch = curr_epoch
-            try:
-                curr_last = manifest.last_device if manifest else ""
-                witness_manifest = SyncManifest(
-                    last_device=curr_last,
-                    last_sync_utc=manifest.last_sync_utc if manifest else "",
-                    epoch=curr_epoch,
-                    active_device=self.config.device_id,
-                    active_since_utc=datetime.now(timezone.utc).isoformat(),
-                    antigravity_version=get_antigravity_version(self.config.antigravity_bin_path),
-                )
-                self.drive.put_manifest(witness_manifest)
-            except Exception as e:
-                logger.debug(f"Could not claim active witness: {e}")
+            self.claim_active_witness(manifest)
 
             # Mark session dirty before launching the editor
             mark_session_dirty(self.config.device_id)
@@ -719,5 +737,4 @@ class SyncRunner:
                 logger.warning("Push was postponed or failed. Local session remains dirty.")
                 print("⚠️ [GC-ChatSync] Push postponed or incomplete. Local changes are preserved.")
                 print("   They will automatically synchronize on the next online launch.")
-                return 2 if exit_code == 0 else exit_code
                 return 2 if exit_code == 0 else exit_code

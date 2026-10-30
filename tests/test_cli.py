@@ -1,14 +1,42 @@
 """Unit tests for the CLI interface."""
 
+import gc
 import os
 import sys
+import tempfile
+import time
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from gc_chatsync.cli import build_parser, main
+from gc_chatsync.config import AppConfig
 
 
 class TestCLI(unittest.TestCase):
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.temp_dir.name)
+        self.log_path = self.tmp_path / "sync.log"
+        self.patch_log = patch("gc_chatsync.cli.get_log_file_path", return_value=self.log_path)
+        self.patch_log.start()
+        self.patch_cfg_dir = patch("gc_chatsync.config.get_config_dir", return_value=self.tmp_path)
+        self.patch_cfg_dir.start()
+
+    def tearDown(self):
+        self.patch_cfg_dir.stop()
+        self.patch_log.stop()
+        gc.collect()
+        try:
+            self.temp_dir.cleanup()
+        except PermissionError:
+            time.sleep(0.1)
+            gc.collect()
+            try:
+                self.temp_dir.cleanup()
+            except Exception:
+                pass
 
     def test_build_parser_subcommands(self):
         parser = build_parser()
@@ -114,6 +142,23 @@ class TestCLI(unittest.TestCase):
         mock_runner.return_value.drive.test_connection.return_value = True
         self.assertEqual(main(["setup"]), 0)
         mock_sc.assert_called_once()
+
+    @patch("gc_chatsync.runner.is_antigravity_process_running", return_value=False)
+    @patch("gc_chatsync.merger.restore_latest_backup")
+    @patch("gc_chatsync.config.load_config")
+    def test_cmd_restore_backup_uses_path_object(self, mock_load, mock_restore, mock_running):
+        """Regression: cfg.antigravity_data_dir is a str, so / operator raised TypeError."""
+        mock_load.return_value = AppConfig(
+            device_id="test-dev",
+            antigravity_data_dir=str(self.tmp_path / "antigravity"),
+        )
+        mock_restore.return_value = (True, "Restored from backup", self.tmp_path / "bak.db")
+
+        code = main(["restore-backup"])
+        self.assertEqual(code, 0)
+        called_db_path = mock_restore.call_args[0][0]
+        self.assertIsInstance(called_db_path, Path)
+        self.assertEqual(called_db_path.name, "conversation_summaries.db")
 
 
 if __name__ == "__main__":

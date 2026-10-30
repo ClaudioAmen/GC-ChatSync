@@ -27,28 +27,38 @@ def is_pid_running(pid: int) -> bool:
         try:
             import ctypes
             kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-            SYNCHRONIZE = 0x00100000
-            handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if handle:
-                kernel32.CloseHandle(handle)
-                return True
+                try:
+                    exit_code = ctypes.c_ulong(0)
+                    if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                        return exit_code.value == STILL_ACTIVE
+                    return True
+                finally:
+                    kernel32.CloseHandle(handle)
             return False
         except Exception:
             # Fallback for Windows without admin privileges
             try:
+                import csv
                 import subprocess
                 kwargs = {}
                 if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
                     kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
                 out = subprocess.run(
-                    ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                    ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                     capture_output=True,
                     text=True,
                     check=False,
                     timeout=3,
                     **kwargs,
                 )
-                return str(pid) in out.stdout
+                for row in csv.reader(out.stdout.splitlines()):
+                    if len(row) >= 2 and row[1].strip() == str(pid):
+                        return True
+                return False
             except Exception:
                 return False
     else:

@@ -78,6 +78,20 @@ class TestProjectMapper(unittest.TestCase):
         )
         self.assertEqual(translated, "file:///D:/Development/app")
 
+    def test_translate_with_custom_mapping_bidirectional(self):
+        """A single custom mapping entry should work in both directions (Linux <-> Windows)."""
+        custom = {"D:/Progetti": "/home/user/Documents/progetti"}
+
+        # Windows -> Linux (matching key)
+        win_uri = "file:///D:/Progetti/gc-chatsync"
+        to_linux = translate_file_uri(win_uri, target_os="linux", custom_mappings=custom)
+        self.assertEqual(to_linux, "file:///home/user/Documents/progetti/gc-chatsync")
+
+        # Linux -> Windows (matching value in reverse)
+        linux_uri = "file:///home/user/Documents/progetti/gc-chatsync"
+        to_win = translate_file_uri(linux_uri, target_os="windows", custom_mappings=custom)
+        self.assertEqual(to_win, "file:///D:/Progetti/gc-chatsync")
+
     def test_translate_project_json(self):
         sample_project = {
             "id": "4777bba5-4413-4c0f-b059-3321e1755397",

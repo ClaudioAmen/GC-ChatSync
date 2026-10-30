@@ -27,9 +27,16 @@ class TestReconcileEngine(unittest.TestCase):
         self.local_db = self.data_dir / "conversation_summaries.db"
         self._create_sample_summaries_db(self.local_db)
 
+        self.config_dir = self.dir_path / "config"
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.patch_cfg_dir = patch("gc_chatsync.config.get_config_dir", return_value=self.config_dir)
+        self.patch_cfg_dir.start()
+        self.patch_lock_cfg_dir = patch("gc_chatsync.lock.get_config_dir", return_value=self.config_dir)
+        self.patch_lock_cfg_dir.start()
+
         self.cfg = AppConfig(
-            antigravity_bin_path=self.dir_path / "fake_antigravity",
-            antigravity_data_dir=self.data_dir,
+            antigravity_bin_path=str(self.dir_path / "fake_antigravity"),
+            antigravity_data_dir=str(self.data_dir),
             remote_folder="TestSync",
             rclone_remote="testremote",
             device_id="test-device",
@@ -40,6 +47,8 @@ class TestReconcileEngine(unittest.TestCase):
 
     def tearDown(self):
         self.patch_which.stop()
+        self.patch_lock_cfg_dir.stop()
+        self.patch_cfg_dir.stop()
         gc.collect()
         try:
             self.temp_dir.cleanup()

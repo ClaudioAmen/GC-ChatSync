@@ -329,14 +329,25 @@ def _create_windows_lnk(shortcut_path: Path, title: str) -> bool:
     antigravity_bin = find_antigravity_executable()
     icon_path = str(antigravity_bin.resolve()) if antigravity_bin else ""
 
+    def _ps_escape(val: str) -> str:
+        """Escape single quotes for PowerShell single-quoted string literals."""
+        return val.replace("'", "''")
+
+    sc_path_ps = _ps_escape(str(shortcut_path))
+    target_ps = _ps_escape(target_path)
+    args_ps = _ps_escape(arguments)
+    work_dir_ps = _ps_escape(str(desktop_dir))
+    title_ps = _ps_escape(title)
+    icon_ps = _ps_escape(icon_path)
+
     ps_script = f"""
 $WshShell = New-Object -comObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut('{shortcut_path}')
-$Shortcut.TargetPath = '{target_path}'
-if ('{arguments}' -ne '') {{ $Shortcut.Arguments = '{arguments}' }}
-$Shortcut.WorkingDirectory = '{desktop_dir}'
-$Shortcut.Description = '{title} with GC-ChatSync'
-if ('{icon_path}' -ne '') {{ $Shortcut.IconLocation = '{icon_path},0' }}
+$Shortcut = $WshShell.CreateShortcut('{sc_path_ps}')
+$Shortcut.TargetPath = '{target_ps}'
+if ('{args_ps}' -ne '') {{ $Shortcut.Arguments = '{args_ps}' }}
+$Shortcut.WorkingDirectory = '{work_dir_ps}'
+$Shortcut.Description = '{title_ps} with GC-ChatSync'
+if ('{icon_ps}' -ne '') {{ $Shortcut.IconLocation = '{icon_ps},0' }}
 $Shortcut.Save()
 
 try {{

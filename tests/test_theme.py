@@ -83,6 +83,46 @@ class TestPalette(unittest.TestCase):
     def test_unknown_os_uses_dark(self, _):
         self.assertEqual(theme.get_palette().name, theme.DARK)
 
+    def test_gui_rounded_components_and_theme_toggle(self):
+        try:
+            import tkinter as tk
+        except ImportError:
+            self.skipTest("Tkinter not installed")
+
+        from unittest.mock import patch
+        from gc_chatsync.gui import ChatSyncGUI
+
+        try:
+            root = tk.Tk()
+            root.withdraw()
+        except tk.TclError:
+            self.skipTest("No display available for Tkinter")
+
+        try:
+            with patch("gc_chatsync.gui.ChatSyncGUI.refresh_status_async"):
+                gui = ChatSyncGUI(root, palette=theme.DARK_PALETTE)
+                self.assertEqual(gui.palette.name, theme.DARK)
+                gui._set_progress(65, "Testing progress bar...")
+                self.assertEqual(gui.progress_bar["value"], 65)
+
+                # Toggle theme Dark -> Light -> Dark
+                gui.toggle_theme()
+                self.assertEqual(gui.palette.name, theme.LIGHT)
+                gui.toggle_theme()
+                self.assertEqual(gui.palette.name, theme.DARK)
+
+                # Disable and re-enable rounded buttons
+                gui._set_buttons_state(False)
+                self.assertFalse(gui.btn_run._enabled)
+                gui._set_buttons_state(True)
+                self.assertTrue(gui.btn_run._enabled)
+                gui._on_close()
+        finally:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()

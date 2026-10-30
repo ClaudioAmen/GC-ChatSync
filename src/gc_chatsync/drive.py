@@ -355,7 +355,7 @@ class DriveClient:
         except Exception:
             return None
 
-    def put_manifest(self, manifest: SyncManifest) -> None:
+    def put_manifest(self, manifest: SyncManifest, update_backup: bool = True) -> None:
         """Upload sync manifest to Google Drive, maintaining a safety .bak on remote."""
         with self._manifest_lock:
             remote_path = f"{self.remote_base}/manifest.json"
@@ -365,10 +365,11 @@ class DriveClient:
                 tmp_path = Path(f.name)
             try:
                 self.run_cmd(["copyto", str(tmp_path), remote_path], timeout=60)
-                try:
-                    self.run_cmd(["copyto", str(tmp_path), remote_bak], timeout=60, log_errors=False)
-                except Exception as bak_err:
-                    logger.debug(f"Could not update remote manifest backup: {bak_err}")
+                if update_backup:
+                    try:
+                        self.run_cmd(["copyto", str(tmp_path), remote_bak], timeout=60, log_errors=False)
+                    except Exception as bak_err:
+                        logger.debug(f"Could not update remote manifest backup: {bak_err}")
                 self._cached_manifest = manifest
                 self._cached_manifest_time = time.time()
                 logger.info(f"Updated remote manifest (last_device={manifest.last_device}, epoch={manifest.epoch})")

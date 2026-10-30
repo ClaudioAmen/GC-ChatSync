@@ -164,6 +164,17 @@ Type=Application
         self.assertTrue(restore_windows_shortcut())
         self.assertEqual(orig_lnk.read_text(), "original link data")
 
+    @patch("subprocess.run")
+    def test_windows_lnk_escapes_single_quotes(self, mock_run):
+        from gc_chatsync.desktop import _create_windows_lnk
+        mock_run.return_value = MagicMock(returncode=0)
+
+        path_with_quote = self.apps_dir / "O'Brien's Desktop" / "Antigravity.lnk"
+        self.assertTrue(_create_windows_lnk(path_with_quote, "O'Brien's App"))
+        ps_cmd = mock_run.call_args[0][0][3]
+        self.assertIn("O''Brien''s Desktop", ps_cmd)
+        self.assertIn("O''Brien''s App", ps_cmd)
+
 
 if __name__ == "__main__":
     unittest.main()

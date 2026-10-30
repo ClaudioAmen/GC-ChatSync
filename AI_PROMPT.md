@@ -67,7 +67,7 @@ Please perform the following onboarding workflow step-by-step:
 2. Based on my preference, run the appropriate command:
    - Link habitual icon (recommended): `gc-chatsync install-shortcut`
    - Create separate icon: `gc-chatsync install-shortcut --standalone`
-3. If I have custom project paths (e.g., projects stored in a different location on Windows vs Linux), ask if I need custom path mappings in `~/.config/gc-chatsync/config.json`.
+3. If I have custom project paths (e.g., projects stored on a secondary drive on Windows vs Linux), ask if I need custom path mappings (`workspace_path_mappings`) in `~/.config/gc-chatsync/config.json` (Linux) or `%APPDATA%\gc-chatsync\config.json` (Windows). Note that a single mapping entry (e.g. `{"D:/Progetti": "/home/user/Documents/progetti"}`) works bidirectionally on both operating systems.
 
 ---
 
